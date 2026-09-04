@@ -1,0 +1,67 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  worker:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lukka/run-vcpkg@v11
+      - uses: lukka/run-cmake@v10
+        with:
+          configurePreset: worker-ci
+          buildPreset: worker-ci
+          testPreset: worker-ci
+
+  asi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: true
+          install: mingw-w64-i686-gcc mingw-w64-i686-cmake mingw-w64-i686-ninja git
+      - shell: msys2 {0}
+        run: cmake -S grecord -B build-asi -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+      - shell: msys2 {0}
+        run: cmake --build build-asi --parallel
+      - shell: msys2 {0}
+        run: ctest --test-dir build-asi --output-on-failure
+
+  broker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: broker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: broker/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm test
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - shell: pwsh
+        run: ./scripts/secret-scan.ps1

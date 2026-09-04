@@ -1,0 +1,41 @@
+{
+  "capture": {
+    "process": "gta_sa.exe",
+    "backend": "windows_graphics_capture"
+  },
+  "video": {
+    "fps": 60,
+    "bitrate": 16000000,
+    "codec": "h264",
+    "prefer_hardware_encoder": true,
+    "keyframe_interval_seconds": 2,
+    "queue_frames": 6
+  },
+  "audio": {
+    "enabled": true,
+    "mode": "process",
+    "microphone": false
+  },
+  "broker": {
+    "enabled": false,
+    "endpoint": "https://upload.gambit-record.invalid",
+    "channel_title": "Gambit Record",
+    "retry_seconds": 30
+  },
+  "recording": {
+    "directory": "grecord/records",
+    "archive_limit_gb": 20
+  },
+  "replay": {
+    "enabled": true,
+    "auto_start": true,
+    "seconds": 600,
+    "storage": "disk",
+    "cache_directory": "grecord/cache",
+    "segment_seconds": 10
+  },
+  "logging": {
+    "directory": "grecord/logs",
+    "level": "info"
+  }
+}

@@ -1,0 +1,42 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lukka/run-vcpkg@v11
+      - name: Build worker
+        shell: pwsh
+        env:
+          GRECORD_RELEASE_KEY: ${{ secrets.GRECORD_BROKER_KEY }}
+        run: |
+          cmake --preset worker-ci -DGRECORD_BROKER_KEY="$env:GRECORD_RELEASE_KEY"
+          cmake --build --preset worker-ci
+          ctest --preset worker-ci
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: true
+          install: mingw-w64-i686-gcc mingw-w64-i686-cmake mingw-w64-i686-ninja git
+      - name: Build ASI
+        shell: msys2 {0}
+        run: cmake -S grecord -B build-asi -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF && cmake --build build-asi --parallel
+      - name: Build installer and checksums
+        shell: pwsh
+        run: |
+          ./installer/build-installer.ps1 -AsiPath ./build-asi/grecord.asi -WorkerPath ./build/bin/Release/GambitRecord.exe
+          Get-FileHash ./dist/Gambit-Record-Setup.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  Gambit-Record-Setup.exe" } | Set-Content ./dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: dist/*
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

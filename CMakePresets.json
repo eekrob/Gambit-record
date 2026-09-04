@@ -1,0 +1,15 @@
+{
+  "version": 6,
+  "configurePresets": [{
+    "name": "worker-ci",
+    "generator": "Visual Studio 17 2022",
+    "architecture": "x64",
+    "binaryDir": "${sourceDir}/build",
+    "cacheVariables": {
+      "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "EVIDENCE_BUILD_TESTS": "ON"
+    }
+  }],
+  "buildPresets": [{"name": "worker-ci", "configurePreset": "worker-ci", "configuration": "Release"}],
+  "testPresets": [{"name": "worker-ci", "configurePreset": "worker-ci", "configuration": "Release", "output": {"outputOnFailure": true}}]
+}
