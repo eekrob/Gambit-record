@@ -81,6 +81,7 @@ NSIS release installer ставит только:
 
 1. Создайте Cloudflare Worker и Durable Objects из `broker/wrangler.toml`.
 2. Установите secrets командами `wrangler secret put`: `BROKER_KEY`, `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN`.
+   Refresh token должен быть выдан со scopes `youtube.upload` и `youtube.readonly`: первый нужен для загрузки, второй — только для определения общего канала в `/v1/channel`.
 3. Укажите реальный HTTPS URL в `config.example.json` перед release.
 4. Добавьте тот же `BROKER_KEY` как GitHub Actions Secret `GRECORD_BROKER_KEY`.
 5. Выполните пробную загрузку и `GET /v1/channel` перед тегом.
