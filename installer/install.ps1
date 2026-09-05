@@ -39,7 +39,18 @@ try {
         Copy-Item -LiteralPath (Join-Path $tempRoot 'grecord.asi') -Destination (Join-Path $TargetPath 'grecord.asi') -Force
         Copy-Item -LiteralPath (Join-Path $tempRoot 'GambitRecord.exe') -Destination $worker -Force
         $config = Join-Path $TargetPath 'grecord\config.json'
-        if (-not (Test-Path -LiteralPath $config)) { Copy-Item -LiteralPath (Join-Path $tempRoot 'config.json') -Destination $config }
+        if (-not (Test-Path -LiteralPath $config)) {
+            Copy-Item -LiteralPath (Join-Path $tempRoot 'config.json') -Destination $config
+        } else {
+            # Preserve user settings, but migrate the non-functional pre-release placeholder.
+            try {
+                $saved = Get-Content -LiteralPath $config -Raw | ConvertFrom-Json
+                if ($saved.broker.endpoint -eq 'https://upload.gambit-record.invalid') {
+                    $saved.broker.endpoint = 'https://gambit-record-broker.whatdroyidclo.workers.dev'
+                    $saved | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $config -Encoding UTF8
+                }
+            } catch { Write-Warning ('Не удалось обновить адрес брокера в существующих настройках: ' + $_.Exception.Message) }
+        }
 
         # One-release migration: disable only the old script, preserve settings and every recording.
         $legacyScript = Join-Path $TargetPath 'moonloader\evidence.lua'

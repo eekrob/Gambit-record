@@ -17,8 +17,8 @@
     "microphone": false
   },
   "broker": {
-    "enabled": false,
-    "endpoint": "https://upload.gambit-record.invalid",
+    "enabled": true,
+    "endpoint": "https://gambit-record-broker.whatdroyidclo.workers.dev",
     "channel_title": "Gambit Record",
     "retry_seconds": 30
   },

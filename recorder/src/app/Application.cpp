@@ -101,7 +101,7 @@ nlohmann::json Application::handle_command(const nlohmann::json& request) {
   }
   if (command == "settings") {
     std::scoped_lock lock(settings_mutex_);
-    return {{"success", true}, {"youtube_enabled", config_.broker.enabled}, {"youtube_configured", config_.broker.endpoint != "https://upload.gambit-record.invalid"}, {"youtube_channel", config_.broker.channel_title}, {"audio_enabled", config_.audio.enabled}, {"microphone_enabled", config_.audio.microphone}, {"microphone_supported", true}, {"archive_limit_gb", config_.recording.archive_limit_gb}};
+    return {{"success", true}, {"youtube_enabled", config_.broker.enabled}, {"youtube_configured", !config_.broker.endpoint.empty()}, {"youtube_channel", config_.broker.channel_title}, {"audio_enabled", config_.audio.enabled}, {"microphone_enabled", config_.audio.microphone}, {"microphone_supported", true}, {"archive_limit_gb", config_.recording.archive_limit_gb}};
   }
   if (command == "youtube_channel") {
     Config::Broker settings; { std::scoped_lock lock(settings_mutex_); settings = config_.broker; }
@@ -119,7 +119,7 @@ nlohmann::json Application::handle_command(const nlohmann::json& request) {
     if (values->contains("archive_limit_gb")) config_.recording.archive_limit_gb = values->value("archive_limit_gb", config_.recording.archive_limit_gb);
     try { config_.save(executable_directory() / "grecord" / "config.json"); } catch (const std::exception& e) { return {{"success", false}, {"error", "CONFIG_WRITE_FAILED"}, {"message", e.what()}}; }
     { std::scoped_lock upload_lock(upload_mutex_); broker_ = std::make_unique<BrokerUploader>(config_.broker); upload_queue_->configure(config_.broker); }
-    return {{"success", true}, {"message", "Settings saved"}, {"youtube_enabled", config_.broker.enabled}, {"youtube_configured", config_.broker.endpoint != "https://upload.gambit-record.invalid"}, {"audio_enabled", config_.audio.enabled}, {"microphone_enabled", config_.audio.microphone}, {"microphone_supported", true}};
+    return {{"success", true}, {"message", "Settings saved"}, {"youtube_enabled", config_.broker.enabled}, {"youtube_configured", !config_.broker.endpoint.empty()}, {"audio_enabled", config_.audio.enabled}, {"microphone_enabled", config_.audio.microphone}, {"microphone_supported", true}};
   }
   if (command == "replay_start") { const bool ok = replay_->start(); return {{"success", ok}, {"message", ok ? "Replay buffer started" : "Replay buffer already active"}}; }
   if (command == "marker") {
@@ -138,7 +138,7 @@ nlohmann::json Application::handle_command(const nlohmann::json& request) {
   if (command == "status") {
     nlohmann::json j{{"success", true}, {"capture", capture_->state() == CaptureState::Running}, {"capture_state", std::string(to_string(capture_->state()))}, {"game_found", capture_->hwnd() != nullptr}, {"recording", recording_->state() == RecordingState::Recording || recording_->state() == RecordingState::WaitingForKeyframe}, {"recording_state", std::string(to_string(recording_->state()))}, {"recording_seconds", recording_->duration_hns() / HnsPerSecond}, {"replay_buffer", replay_->state() != ReplayState::Stopped && replay_->state() != ReplayState::Error}, {"replay_state", std::string(to_string(replay_->state()))}, {"replay_seconds", config_.replay.seconds}, {"replay_available_seconds", replay_->available_hns() / HnsPerSecond}, {"encoder", encoder_->encoder_name()}, {"fps", config_.video.fps}, {"dropped_frames", dropped_frames_.load()}, {"save_id", save_generation_}};
     auto d = stream_description(); j["width"] = d.width; j["height"] = d.height; j["audio"] = audio_->running();
-    { std::scoped_lock lock(settings_mutex_); j["youtube_enabled"] = config_.broker.enabled; j["youtube_configured"] = config_.broker.endpoint != "https://upload.gambit-record.invalid"; j["youtube_channel"] = config_.broker.channel_title; j["audio_enabled"] = config_.audio.enabled; j["microphone_enabled"] = config_.audio.microphone; j["microphone_supported"] = true; }
+    { std::scoped_lock lock(settings_mutex_); j["youtube_enabled"] = config_.broker.enabled; j["youtube_configured"] = !config_.broker.endpoint.empty(); j["youtube_channel"] = config_.broker.channel_title; j["audio_enabled"] = config_.audio.enabled; j["microphone_enabled"] = config_.audio.microphone; j["microphone_supported"] = true; }
     { auto upload = upload_queue_->status(); j["youtube_upload_in_progress"] = upload.value("in_progress", false); j["youtube_upload_sent_bytes"] = upload.value("sent_bytes", 0ull); j["youtube_upload_total_bytes"] = upload.value("total_bytes", 0ull); j["youtube_upload_percent"] = upload.value("percent", 0u); j["youtube_upload_pending"] = upload.value("pending", 0u); j["youtube_last_upload_success"] = upload.value("last_success", false); j["youtube_last_upload_url"] = upload.value("last_url", ""); j["youtube_last_upload_error"] = upload.value("last_error", ""); }
     { std::scoped_lock lock(save_mutex_); j["save_in_progress"] = save_future_.valid(); if (last_save_) { j["last_save_success"] = last_save_->success; j["last_save_path"] = last_save_->path.string(); j["last_save_duration_seconds"] = last_save_->duration_hns / static_cast<double>(HnsPerSecond); j["last_save_error"] = last_save_->error; } } return j;
   }

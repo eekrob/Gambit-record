@@ -2,7 +2,7 @@
 
 ## GAdmin
 
-Gambit Record reuses and adapts the SA-MP version detection, version-specific address tables, event identifiers, and Direct3D9/ImGui integration approach from:
+Gambit Record reuses and adapts the SA-MP version detection, version-specific address tables, event identifiers, Direct3D9/ImGui integration approach, theme layout, and GTA cursor-state implementation from:
 
 - Project: GAdmin — Plugin simplifying the work of administrators on Gambit-RP
 - Repository: https://github.com/Vadim-Kamalov/GAdmin

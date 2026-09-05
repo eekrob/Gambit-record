@@ -9,8 +9,8 @@ struct Config {
   struct Video { std::uint32_t fps{60}; std::uint32_t bitrate{16'000'000}; std::string codec{"h264"}; bool prefer_hardware_encoder{true}; std::uint32_t keyframe_interval_seconds{2}; std::size_t queue_frames{6}; } video;
   struct Audio { bool enabled{true}; std::string mode{"process"}; bool microphone{false}; } audio;
   struct Broker {
-    bool enabled{false};
-    std::string endpoint{"https://upload.gambit-record.invalid"};
+    bool enabled{true};
+    std::string endpoint{"https://gambit-record-broker.whatdroyidclo.workers.dev"};
     std::string channel_title{"Gambit Record"};
     std::uint32_t retry_seconds{30};
   } broker;
