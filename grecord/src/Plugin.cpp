@@ -50,6 +50,7 @@ WNDPROC g_original_wndproc{};
 std::atomic_bool g_running{true};
 std::atomic_bool g_initialized{};
 std::atomic_bool g_menu_open{};
+std::atomic_bool g_reload_settings{true};
 std::atomic_bool g_recording{};
 std::atomic<unsigned> g_upload_percent{};
 std::atomic_bool g_uploading{};
@@ -247,7 +248,11 @@ bool on_gambit_server() {
 
 void apply_action(grecord::Action action) {
   switch (action) {
-    case grecord::Action::open_settings: g_menu_open = !g_menu_open.load(); break;
+    case grecord::Action::open_settings: {
+      const bool opening = !g_menu_open.load(); g_menu_open = opening;
+      if (opening) g_reload_settings = true;
+      break;
+    }
     case grecord::Action::start_recording: start_recording(); break;
     case grecord::Action::stop_local: stop_recording(false); break;
     case grecord::Action::show_start_prompt: { std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::start; break; }
@@ -295,6 +300,7 @@ void __fastcall send_command_hook(void* self, void*, const char* raw) {
   grecord::Action action;
   { std::scoped_lock lock(g_state_mutex); action = g_logic.on_command(command, g_recording.load()); }
   apply_action(action);
+  if (word == "/esettings") g_page = Page::settings;
   if (word == "/estatus") notice(g_recording ? "REC: включена" : "REC: выключена");
   if (!local) g_send_command(self, raw);
 }
@@ -472,21 +478,35 @@ void render_window() {
       card_end();
     } else if (g_page == Page::settings) {
       page_title("Настройки", "YouTube, звук и локальный архив");
-      bool youtube = status.value("youtube_enabled", true);
-      int audio_source = status.value("microphone_enabled", false) ? 2 : status.value("audio_enabled", true) ? 1 : 0;
-      int archive = status.value("archive_limit_gb", 20); bool changed{};
+      static bool youtube{}; static int audio_source{}; static int archive{}; static bool dirty{};
+      if (g_reload_settings.exchange(false)) {
+        youtube = status.value("youtube_enabled", true);
+        audio_source = status.value("microphone_enabled", false) ? 2 : status.value("audio_enabled", true) ? 1 : 0;
+        archive = status.value("archive_limit_gb", 20); dirty = false;
+      }
       card_begin("##youtube-settings", "YOUTUBE", 88.f);
-      changed |= ImGui::Checkbox("Автоматически ставить запись в очередь", &youtube);
+      dirty |= ImGui::Checkbox("Автоматически ставить запись в очередь", &youtube);
       card_end();
       card_begin("##audio-settings", "ИСТОЧНИК ЗВУКА", 95.f);
-      changed |= ImGui::RadioButton("Без звука", &audio_source, 0); ImGui::SameLine();
-      changed |= ImGui::RadioButton("Звук игры", &audio_source, 1); ImGui::SameLine();
-      changed |= ImGui::RadioButton("Микрофон", &audio_source, 2);
+      dirty |= ImGui::RadioButton("Без звука", &audio_source, 0); ImGui::SameLine();
+      dirty |= ImGui::RadioButton("Звук игры", &audio_source, 1); ImGui::SameLine();
+      dirty |= ImGui::RadioButton("Микрофон", &audio_source, 2);
       card_end();
       card_begin("##archive-settings", "ЛОКАЛЬНЫЙ АРХИВ", 90.f);
-      ImGui::SetNextItemWidth(-1); changed |= ImGui::SliderInt("##archive-size", &archive, 1, 100, "%d ГБ");
+      ImGui::SetNextItemWidth(-1); dirty |= ImGui::SliderInt("##archive-size", &archive, 1, 100, "%d ГБ");
       card_end();
-      if (changed) request_worker({{"command", "settings_set"}, {"settings", {{"youtube_enabled", youtube}, {"audio_enabled", audio_source == 1}, {"microphone_enabled", audio_source == 2}, {"archive_limit_gb", archive}}}});
+      if (dirty) {
+        if (action_button("Сохранить настройки", {0x40 / 255.f, 0xa0 / 255.f, 0x67 / 255.f, 1.f}, {190, 36})) {
+          const auto response = request_worker({{"command", "settings_set"}, {"settings", {{"youtube_enabled", youtube}, {"audio_enabled", audio_source == 1}, {"microphone_enabled", audio_source == 2}, {"archive_limit_gb", archive}}}});
+          if (response.value("success", false)) {
+            { std::scoped_lock lock(g_state_mutex); g_status["youtube_enabled"] = youtube; g_status["audio_enabled"] = audio_source == 1; g_status["microphone_enabled"] = audio_source == 2; g_status["archive_limit_gb"] = archive; }
+            dirty = false; notice("Настройки сохранены");
+          } else notice("Не удалось сохранить настройки: " + response.value("error", "worker offline"));
+        }
+        ImGui::SameLine(); ImGui::TextColored({0xf9 / 255.f, 0xe2 / 255.f, 0xaf / 255.f, 1.f}, "Есть несохранённые изменения");
+      } else {
+        ImGui::TextDisabled("Изменений нет");
+      }
     } else {
       page_title("О программе", "Информация о сборке и используемых компонентах");
       card_begin("##about", "GAMBIT RECORD 1.0.0", 190.f);

@@ -28,6 +28,9 @@ jobs:
       - name: Build ASI
         shell: msys2 {0}
         run: cmake -S grecord -B build-asi -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF && cmake --build build-asi --parallel
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --no-progress -y
       - name: Build installer and checksums
         shell: pwsh
         run: |

@@ -4,6 +4,8 @@ Gambit Record — GPLv3-инструмент записи доказательс
 
 > Все пользователи release-сборки загружают ролики на один общий YouTube-канал Gambit Record. Приватность ролика — `unlisted`: ролик доступен любому, у кого есть ссылка. Для непроверенного YouTube API-проекта Google может дополнительно принудительно ограничить видимость роликов.
 
+Обычному пользователю не нужны Cloudflare, OAuth, токены или собственный брокер: он один раз запускает NSIS-установщик и пользуется `/grecord`. Общий YouTube refresh token хранится только в Cloudflare Secrets и никогда не входит в клиентскую поставку.
+
 ## Возможности
 
 - `/grecord`: вкладки «Запись», «Загрузки», «Настройки», «О программе» в тёмной ImGui-теме.
@@ -57,7 +59,7 @@ ctest --test-dir build-asi -C Release --output-on-failure
 
 ## Установка
 
-Release installer ставит только:
+NSIS release installer ставит только:
 
 - `<GTA>/grecord.asi`;
 - `<GTA>/GambitRecord.exe`;
@@ -65,7 +67,15 @@ Release installer ставит только:
 
 Существующий `moonloader/evidence.lua` переименовывается в timestamped `.bak`, а его config копируется в `grecord/migration`. Записи и старый каталог доказательств не удаляются.
 
-## Настройка брокера
+Для сборки установщика нужен NSIS 3:
+
+```powershell
+./installer/build-installer.ps1 -AsiPath ./build-asi/Release/grecord.asi -WorkerPath ./build/bin/Release/GambitRecord.exe
+```
+
+## Настройка общего брокера (только для владельца проекта)
+
+Тестеры и обычные пользователи этот раздел не выполняют.
 
 1. Создайте Cloudflare Worker и Durable Objects из `broker/wrangler.toml`.
 2. Установите secrets командами `wrangler secret put`: `BROKER_KEY`, `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN`.
