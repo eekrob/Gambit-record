@@ -11,6 +11,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       - uses: lukka/run-vcpkg@v11
       - name: Build worker
         shell: pwsh
@@ -34,7 +37,7 @@ jobs:
       - name: Build installer and checksums
         shell: pwsh
         run: |
-          ./installer/build-installer.ps1 -AsiPath ./build-asi/grecord.asi -WorkerPath ./build/bin/Release/GambitRecord.exe
+          ./installer/build-installer.ps1 -AsiPath ./build-asi/grecord.asi -WorkerPath ./build/bin/GambitRecord.exe
           Get-FileHash ./dist/Gambit-Record-Setup.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  Gambit-Record-Setup.exe" } | Set-Content ./dist/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
