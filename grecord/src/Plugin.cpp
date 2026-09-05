@@ -560,9 +560,9 @@ DWORD WINAPI initialize(void*) {
   g_admin = own_name(); g_logic.set_admin(g_admin);
   g_ipc = std::make_unique<grecord::IpcClient>(pipe_name()); launch_worker();
   if (MH_Initialize() != MH_OK) return 0;
-  if (MH_CreateHook(reinterpret_cast<void*>(g_samp + send_command_offsets[vi()]), send_command_hook,
+  if (MH_CreateHook(reinterpret_cast<void*>(g_samp + send_command_offsets[vi()]), reinterpret_cast<void*>(send_command_hook),
                     reinterpret_cast<void**>(&g_send_command)) != MH_OK ||
-      MH_CreateHook(reinterpret_cast<void*>(g_samp + incoming_rpc_offsets[vi()]), incoming_rpc_hook,
+      MH_CreateHook(reinterpret_cast<void*>(g_samp + incoming_rpc_offsets[vi()]), reinterpret_cast<void*>(incoming_rpc_hook),
                     reinterpret_cast<void**>(&g_incoming_rpc)) != MH_OK) return 0;
   MH_EnableHook(reinterpret_cast<void*>(g_samp + send_command_offsets[vi()]));
   MH_EnableHook(reinterpret_cast<void*>(g_samp + incoming_rpc_offsets[vi()]));
@@ -570,8 +570,8 @@ DWORD WINAPI initialize(void*) {
   while (g_running && !(device = *reinterpret_cast<IDirect3DDevice9**>(0xC97C28))) Sleep(100);
   if (!g_running) return 0;
   void** table = *reinterpret_cast<void***>(device);
-  MH_CreateHook(table[17], present_hook, reinterpret_cast<void**>(&g_present));
-  MH_CreateHook(table[16], reset_hook, reinterpret_cast<void**>(&g_reset));
+  MH_CreateHook(table[17], reinterpret_cast<void*>(present_hook), reinterpret_cast<void**>(&g_present));
+  MH_CreateHook(table[16], reinterpret_cast<void*>(reset_hook), reinterpret_cast<void**>(&g_reset));
   MH_EnableHook(table[17]); MH_EnableHook(table[16]);
   g_initialized = true;
   std::thread(status_loop).detach();
