@@ -27,20 +27,21 @@ try {
     }
     $TargetPath = [IO.Path]::GetFullPath($TargetPath)
     if (-not (Test-Path -LiteralPath (Join-Path $TargetPath 'gta_sa.exe') -PathType Leaf)) { Show-Result 'gta_sa.exe не найден.' $true; exit 2 }
-    $payload = Join-Path $PSScriptRoot 'payload.zip'
-    if (-not (Test-Path -LiteralPath $payload -PathType Leaf)) { throw 'payload.zip не найден.' }
-    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('GambitRecord-' + [Guid]::NewGuid().ToString('N'))
-    [IO.Directory]::CreateDirectory($tempRoot) | Out-Null
+    $payloadRoot = Join-Path $PSScriptRoot 'payload'
+    foreach ($name in @('grecord.asi', 'GambitRecord.exe', 'config.json')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $payloadRoot $name) -PathType Leaf)) {
+            throw "installer\\payload\\$name не найден. Сначала запустите build-installer.ps1."
+        }
+    }
     try {
-        Expand-Archive -LiteralPath $payload -DestinationPath $tempRoot -Force
         $worker = Join-Path $TargetPath 'GambitRecord.exe'
         Get-CimInstance Win32_Process -Filter "Name='GambitRecord.exe'" | Where-Object { $_.ExecutablePath -eq $worker } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
         [IO.Directory]::CreateDirectory((Join-Path $TargetPath 'grecord')) | Out-Null
-        Copy-Item -LiteralPath (Join-Path $tempRoot 'grecord.asi') -Destination (Join-Path $TargetPath 'grecord.asi') -Force
-        Copy-Item -LiteralPath (Join-Path $tempRoot 'GambitRecord.exe') -Destination $worker -Force
+        Copy-Item -LiteralPath (Join-Path $payloadRoot 'grecord.asi') -Destination (Join-Path $TargetPath 'grecord.asi') -Force
+        Copy-Item -LiteralPath (Join-Path $payloadRoot 'GambitRecord.exe') -Destination $worker -Force
         $config = Join-Path $TargetPath 'grecord\config.json'
         if (-not (Test-Path -LiteralPath $config)) {
-            Copy-Item -LiteralPath (Join-Path $tempRoot 'config.json') -Destination $config
+            Copy-Item -LiteralPath (Join-Path $payloadRoot 'config.json') -Destination $config
         } else {
             # Preserve user settings, but migrate the non-functional pre-release placeholder.
             try {
@@ -64,13 +65,7 @@ try {
                 Copy-Item -LiteralPath $legacyConfig -Destination (Join-Path $migration ('evidence-config-' + $stamp + '.json'))
             }
         }
-    } finally {
-        $resolved = [IO.Path]::GetFullPath($tempRoot)
-        $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-        if ($resolved.StartsWith($tempBase, [StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolved).StartsWith('GambitRecord-')) {
-            Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
+    } finally { }
     Show-Result 'Gambit Record установлен. Запустите GTA и используйте /grecord.'
     exit 0
 } catch { Show-Result ('Ошибка установки: ' + $_.Exception.Message) $true; exit 10 }
