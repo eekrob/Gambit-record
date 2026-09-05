@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(grecord VERSION 1.0.0 LANGUAGES CXX)
+project(grecord VERSION 0.1.1 LANGUAGES CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "grecord.asi supports Windows only")
@@ -54,7 +54,9 @@ if(MSVC)
   target_compile_options(grecord_core PRIVATE /W4 /EHsc /utf-8)
 else()
   target_compile_options(grecord PRIVATE -Wall -Wextra -Wpedantic)
-  target_link_options(grecord PRIVATE -static-libgcc -static-libstdc++)
+  # ASI plugins are loaded directly by gta_sa.exe. Ship no MinGW runtime DLLs:
+  # users must not need libgcc, libstdc++ or libwinpthread beside the game.
+  target_link_options(grecord PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
 include(CTest)

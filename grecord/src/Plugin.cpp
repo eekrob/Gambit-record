@@ -509,7 +509,7 @@ void render_window() {
       }
     } else {
       page_title("О программе", "Информация о сборке и используемых компонентах");
-      card_begin("##about", "GAMBIT RECORD 1.0.0", 190.f);
+      card_begin("##about", "GAMBIT RECORD 0.1.1", 190.f);
       ImGui::TextWrapped("Нативный ASI-плагин записи доказательств для Gambit-RP.");
       ImGui::Spacing();
       ImGui::TextWrapped("Интерфейс, управление курсором и схема SA-MP-событий используют подходы GAdmin (GPLv3), commit c31749c0.");

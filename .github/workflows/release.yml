@@ -30,7 +30,14 @@ jobs:
           install: mingw-w64-i686-gcc mingw-w64-i686-cmake mingw-w64-i686-ninja git
       - name: Build ASI
         shell: msys2 {0}
-        run: cmake -S grecord -B build-asi -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF && cmake --build build-asi --parallel
+        run: |
+          cmake -S grecord -B build-asi -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build build-asi --parallel
+          if objdump -p build-asi/grecord.asi | grep -Eiq 'DLL Name: (libgcc|libstdc\+\+|libwinpthread)'; then
+            echo 'grecord.asi depends on a MinGW runtime DLL' >&2
+            objdump -p build-asi/grecord.asi | grep -i 'DLL Name:' >&2
+            exit 1
+          fi
       - name: Install NSIS
         shell: pwsh
         run: choco install nsis --no-progress -y

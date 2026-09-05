@@ -37,6 +37,14 @@ jobs:
         run: cmake --build build-asi --parallel
       - shell: msys2 {0}
         run: ctest --test-dir build-asi --output-on-failure
+      - name: Check ASI runtime dependencies
+        shell: msys2 {0}
+        run: |
+          if objdump -p build-asi/grecord.asi | grep -Eiq 'DLL Name: (libgcc|libstdc\+\+|libwinpthread)'; then
+            echo 'grecord.asi depends on a MinGW runtime DLL' >&2
+            objdump -p build-asi/grecord.asi | grep -i 'DLL Name:' >&2
+            exit 1
+          fi
 
   broker:
     runs-on: ubuntu-latest

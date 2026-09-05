@@ -125,7 +125,7 @@ UploadResult BrokerUploader::upload(const std::filesystem::path& file, const Evi
   const auto description = "Server: " + metadata.server + "\nObserved player: " + metadata.target_name +
       (metadata.target_id >= 0 ? " [" + std::to_string(metadata.target_id) + "]" : "") +
       "\nCommand: " + metadata.punishment_command + "\nReason: " + metadata.punishment_reason +
-      "\nRecording period: " + metadata.recording_period + "\nGambit Record 1.0.0\nSHA-256: " + hash;
+      "\nRecording period: " + metadata.recording_period + "\nGambit Record 0.1.1\nSHA-256: " + hash;
   std::uint64_t offset{};
   result.upload_id = std::move(resume_id);
   if (!result.upload_id.empty()) {

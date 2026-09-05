@@ -4,7 +4,7 @@ Unicode True
 !include "FileFunc.nsh"
 
 !define PRODUCT_NAME "Gambit Record"
-!define PRODUCT_VERSION "1.0.0"
+!define PRODUCT_VERSION "0.1.1"
 Var BackupStamp
 
 Name "${PRODUCT_NAME}"
@@ -16,7 +16,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "1.0.0.0"
+VIProductVersion "0.1.1.0"
 VIAddVersionKey /LANG=1049 "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey /LANG=1049 "FileDescription" "Gambit Record installer for Gambit-RP"
 VIAddVersionKey /LANG=1049 "FileVersion" "${PRODUCT_VERSION}"
