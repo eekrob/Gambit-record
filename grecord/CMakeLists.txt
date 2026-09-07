@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(grecord VERSION 0.1.3 LANGUAGES CXX)
+project(grecord VERSION 0.1.4 LANGUAGES CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "grecord.asi supports Windows only")

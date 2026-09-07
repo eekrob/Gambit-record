@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(GambitRecord VERSION 0.1.3 LANGUAGES CXX)
+project(GambitRecord VERSION 0.1.4 LANGUAGES CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "Gambit Record worker supports Windows only")
