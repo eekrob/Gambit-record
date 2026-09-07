@@ -12,6 +12,7 @@ namespace evidence {
 
 struct UploadResult {
   bool success{};
+  bool retryable{};
   std::string upload_id;
   std::string video_id;
   std::string url;
@@ -34,6 +35,7 @@ public:
   ChannelResult channel() const;
   static std::string sha256(const std::filesystem::path& file);
   static std::string video_title(const EvidenceMetadata& metadata);
+  static bool build_configured() noexcept;
 
 private:
   Config::Broker settings_;

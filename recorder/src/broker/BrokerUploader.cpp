@@ -4,7 +4,9 @@
 #include <winhttp.h>
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <fstream>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <utility>
 #include <vector>
@@ -61,21 +63,37 @@ bool parse_endpoint(const std::string& source, Endpoint& endpoint) {
   return true;
 }
 struct Response { DWORD status{}; std::string body; };
+bool retryable_status(DWORD status) {
+  return status == 0 || status == 408 || status == 425 || status == 429 || status >= 500;
+}
 Response request(HINTERNET connection, const Endpoint& endpoint, const wchar_t* method,
                  const std::wstring& path, const std::wstring& extra_headers,
-                 const void* body, DWORD size) {
+                 const void* body, DWORD size, const std::function<void(DWORD)>& write_progress = {}) {
   Handle req{WinHttpOpenRequest(connection, method, (endpoint.prefix + path).c_str(), nullptr,
                                 WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, endpoint.flags)};
   if (!req) return {};
   std::wstring headers = L"X-GRecord-Key: " + widen(GRECORD_BROKER_KEY) + L"\r\n" + extra_headers;
-  if (!WinHttpSendRequest(req, headers.c_str(), static_cast<DWORD>(-1L), const_cast<void*>(body), size, size, 0)
-      || !WinHttpReceiveResponse(req, nullptr)) return {};
+  if (!write_progress) {
+    if (!WinHttpSendRequest(req, headers.c_str(), static_cast<DWORD>(-1L), const_cast<void*>(body), size, size, 0)
+        || !WinHttpReceiveResponse(req, nullptr)) return {};
+    return {response_status(req), read_response(req)};
+  }
+  if (!WinHttpSendRequest(req, headers.c_str(), static_cast<DWORD>(-1L), WINHTTP_NO_REQUEST_DATA, 0, size, 0)) return {};
+  const auto* bytes = static_cast<const std::byte*>(body); DWORD sent{};
+  while (sent < size) {
+    const DWORD amount = std::min<DWORD>(64 * 1024, size - sent); DWORD written{};
+    if (!WinHttpWriteData(req, bytes + sent, amount, &written) || !written) return {};
+    sent += written; if (write_progress) write_progress(sent);
+  }
+  if (!WinHttpReceiveResponse(req, nullptr)) return {};
   return {response_status(req), read_response(req)};
 }
 std::string json_string(const std::string& body, const char* key) {
   try { return json::parse(body).value(key, ""); } catch (...) { return {}; }
 }
 } // namespace
+
+bool BrokerUploader::build_configured() noexcept { return !std::string_view(GRECORD_BROKER_KEY).empty(); }
 
 std::string BrokerUploader::video_title(const EvidenceMetadata& metadata) {
   const auto admin = metadata.admin.empty() ? "Unknown_Admin" : metadata.admin;
@@ -109,23 +127,23 @@ UploadResult BrokerUploader::upload(const std::filesystem::path& file, const Evi
                                     ProgressCallback progress, std::string resume_id, std::stop_token stop) const {
   UploadResult result;
   if (!settings_.enabled) { result.error = "Broker upload is disabled"; return result; }
-  if (std::string_view(GRECORD_BROKER_KEY).empty()) { result.error = "This build has no broker key"; return result; }
+  if (!build_configured()) { result.error = "This build has no broker key"; return result; }
   std::error_code ec; const auto total = std::filesystem::file_size(file, ec);
   if (ec || !total) { result.error = "recording file is missing"; return result; }
   if (total > 4ull * 1024 * 1024 * 1024) { result.error = "recording exceeds the 4 GiB broker limit"; return result; }
   Endpoint endpoint; if (!parse_endpoint(settings_.endpoint, endpoint)) { result.error = "invalid HTTPS broker endpoint"; return result; }
   Handle session{WinHttpOpen(L"GambitRecord/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)};
-  if (!session) { result.error = "WinHTTP initialization failed"; return result; }
+  if (!session) { result.retryable = true; result.error = "WinHTTP initialization failed"; return result; }
   WinHttpSetTimeouts(session, 10000, 10000, 30000, 30000);
   Handle connection{WinHttpConnect(session, endpoint.host.c_str(), endpoint.port, 0)};
-  if (!connection) { result.error = "broker unavailable"; return result; }
+  if (!connection) { result.retryable = true; result.error = "broker unavailable"; return result; }
 
   const auto hash = sha256(file);
   const auto description = "Server: " + metadata.server + "\nObserved player: " + metadata.target_name +
       (metadata.target_id >= 0 ? " [" + std::to_string(metadata.target_id) + "]" : "") +
       "\nCommand: " + metadata.punishment_command + "\nReason: " + metadata.punishment_reason +
-      "\nRecording period: " + metadata.recording_period + "\nGambit Record 0.1.1\nSHA-256: " + hash;
+      "\nRecording period: " + metadata.recording_period + "\nGambit Record 0.1.2\nSHA-256: " + hash;
   std::uint64_t offset{};
   result.upload_id = std::move(resume_id);
   if (!result.upload_id.empty()) {
@@ -136,7 +154,7 @@ UploadResult BrokerUploader::upload(const std::filesystem::path& file, const Evi
       try { offset = std::stoull(json_string(resumed.body, "nextOffset")); } catch (...) { offset = 0; }
       if (offset > total) offset = 0;
     } else if (resumed.status == 404 || resumed.status == 410) result.upload_id.clear();
-    else { result.error = "broker resume failed (HTTP " + std::to_string(resumed.status) + ")"; return result; }
+    else { result.retryable = retryable_status(resumed.status); result.error = "broker resume failed (HTTP " + std::to_string(resumed.status) + ")"; return result; }
   }
   if (result.upload_id.empty()) {
     const json create_body = {{"size", total}, {"contentType", "video/mp4"}, {"title", video_title(metadata)},
@@ -144,7 +162,7 @@ UploadResult BrokerUploader::upload(const std::filesystem::path& file, const Evi
     const auto create_text = create_body.dump();
     auto created = request(connection, endpoint, L"POST", L"/v1/uploads", L"Content-Type: application/json\r\n",
                            create_text.data(), static_cast<DWORD>(create_text.size()));
-    if (created.status != 201) { result.error = "broker session failed (HTTP " + std::to_string(created.status) + "): " + created.body.substr(0, 240); return result; }
+    if (created.status != 201) { result.retryable = retryable_status(created.status); result.error = "broker session failed (HTTP " + std::to_string(created.status) + "): " + created.body.substr(0, 240); return result; }
     result.upload_id = json_string(created.body, "id");
     if (result.upload_id.empty()) { result.error = "broker returned no upload id"; return result; }
   }
@@ -153,19 +171,19 @@ UploadResult BrokerUploader::upload(const std::filesystem::path& file, const Evi
   std::vector<char> buffer(static_cast<std::size_t>(chunk_size)); input.seekg(static_cast<std::streamoff>(offset));
   if (progress) progress(offset, total);
   while (offset < total) {
-    if (stop.stop_requested()) { result.error = "upload cancelled during shutdown"; return result; }
+    if (stop.stop_requested()) { result.retryable = true; result.error = "upload cancelled during shutdown"; return result; }
     const auto count = std::min<std::uint64_t>(chunk_size, total - offset);
     input.read(buffer.data(), static_cast<std::streamsize>(count));
     if (static_cast<std::uint64_t>(input.gcount()) != count) { result.error = "recording read failed"; return result; }
     const std::wstring headers = L"Content-Type: video/mp4\r\nContent-Range: bytes " + std::to_wstring(offset) +
         L"-" + std::to_wstring(offset + count - 1) + L"/" + std::to_wstring(total) + L"\r\n";
     auto uploaded = request(connection, endpoint, L"PUT", L"/v1/uploads/" + widen(result.upload_id), headers,
-                            buffer.data(), static_cast<DWORD>(count));
+                            buffer.data(), static_cast<DWORD>(count), [&, base=offset](DWORD sent){ if(progress) progress(base+sent,total); });
     if (uploaded.status == 200 || uploaded.status == 201) {
       result.video_id = json_string(uploaded.body, "videoId"); result.url = json_string(uploaded.body, "url");
       offset += count; if (progress) progress(offset, total); break;
     }
-    if (uploaded.status != 308) { result.error = "broker upload failed (HTTP " + std::to_string(uploaded.status) + "): " + uploaded.body.substr(0, 240); return result; }
+    if (uploaded.status != 308) { result.retryable = retryable_status(uploaded.status); result.error = "broker upload failed (HTTP " + std::to_string(uploaded.status) + "): " + uploaded.body.substr(0, 240); return result; }
     auto next = json_string(uploaded.body, "nextOffset");
     try { offset = next.empty() ? offset + count : std::stoull(next); } catch (...) { offset += count; }
     input.clear(); input.seekg(static_cast<std::streamoff>(offset)); if (progress) progress(offset, total);
@@ -182,7 +200,7 @@ ChannelResult BrokerUploader::channel() const {
   Handle connection{WinHttpConnect(session, endpoint.host.c_str(), endpoint.port, 0)};
   if (!connection) return {false, {}, {}, "broker unavailable"};
   auto response = request(connection, endpoint, L"GET", L"/v1/channel", {}, nullptr, 0);
-  if (response.status != 200) return {false, {}, {}, "broker channel request failed"};
+  if (response.status != 200) return {false, {}, {}, "broker channel request failed (HTTP " + std::to_string(response.status) + "): " + response.body.substr(0, 240)};
   try { auto body = json::parse(response.body); return {true, body.value("id", ""), body.value("title", ""), {}}; }
   catch (const std::exception& e) { return {false, {}, {}, e.what()}; }
 }

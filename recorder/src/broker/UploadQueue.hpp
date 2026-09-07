@@ -32,7 +32,9 @@ private:
   mutable std::mutex mutex_;
   std::vector<Job> jobs_;
   std::optional<UploadResult> last_;
+  std::optional<EvidenceMetadata> last_metadata_;
   std::string active_id_;
+  std::string active_phase_;
   std::atomic<std::uint64_t> sent_{};
   std::atomic<std::uint64_t> total_{};
   std::jthread thread_;

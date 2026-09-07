@@ -27,6 +27,7 @@ private:
   void encoder_loop(std::stop_token token);
   void on_encoded(EncodedSample sample);
   StreamDescription stream_description() const;
+  bool capture_ready() const;
   void collect_save_result();
   void recover_pipeline();
   Config config_; D3DDevice d3d_; BoundedQueue<VideoFrame> frames_;
@@ -38,6 +39,7 @@ private:
   std::mutex upload_mutex_;
   std::mutex settings_mutex_;
   std::atomic_bool audio_failed_{};
+  std::atomic<ULONGLONG> last_encoded_frame_tick_{};
   std::atomic<DWORD> audio_pid_{};
   std::string active_audio_mode_;
   bool mf_started_{};

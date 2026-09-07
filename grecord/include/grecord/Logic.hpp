@@ -47,6 +47,7 @@ public:
   static bool is_punishment_command(std::string_view command);
   static std::string punishment_reason(std::string_view command);
   static bool confirms_punishment(std::string_view message, std::string_view admin);
+  static std::string upload_announcement(std::string_view target, int day, int month, int year, int hour, int minute);
 
 private:
   std::string admin_;
@@ -60,5 +61,6 @@ private:
 };
 
 std::string cp1251_to_utf8(std::string_view input);
+std::string utf8_to_cp1251(std::string_view input);
 
 } // namespace grecord

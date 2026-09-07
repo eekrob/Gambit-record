@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <format>
 
 namespace grecord {
 namespace {
@@ -57,6 +58,11 @@ bool Logic::confirms_punishment(std::string_view message, std::string_view admin
   if (!action) return false;
   const std::string direct = "Администратор " + std::string(admin) + " ";
   return (!admin.empty() && message.starts_with(direct)) || ends_with_admin(message, admin);
+}
+
+std::string Logic::upload_announcement(std::string_view target, int day, int month, int year, int hour, int minute) {
+  return std::format("/a Отправил запись слежки за {} | {:02}.{:02}.{:04} | {:02}:{:02}.",
+                     target.empty() ? "неизвестным игроком" : target, day, month, year, hour, minute);
 }
 
 Action Logic::on_command(std::string_view command, bool recording,

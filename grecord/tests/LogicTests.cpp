@@ -5,6 +5,9 @@
 using namespace grecord;
 int main() {
   assert(cp1251_to_utf8(std::string("\xC7\xE0\xEF\xE8\xF1\xFC")) == "Запись");
+  assert(utf8_to_cp1251("Запись") == std::string("\xC7\xE0\xEF\xE8\xF1\xFC"));
+  assert(Logic::upload_announcement("Benjamin_Botsford", 7, 9, 2026, 8, 5) ==
+         "/a Отправил запись слежки за Benjamin_Botsford | 07.09.2026 | 08:05.");
   assert(Logic::is_punishment_command("/ban 52 3 5pp"));
   assert(Logic::is_punishment_command("/BMUTE 3 30 flood"));
   assert(!Logic::is_punishment_command("/banana"));

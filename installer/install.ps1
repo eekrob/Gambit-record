@@ -21,7 +21,6 @@ try {
         Add-Type -AssemblyName System.Windows.Forms
         $dialog = [Windows.Forms.FolderBrowserDialog]::new()
         $dialog.Description = 'Выберите папку GTA San Andreas с gta_sa.exe'
-        if (Test-Path -LiteralPath 'C:\Games\GTA San Andreas\gta_sa.exe') { $dialog.SelectedPath = 'C:\Games\GTA San Andreas' }
         if ($dialog.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) { exit 1 }
         $TargetPath = $dialog.SelectedPath
     }

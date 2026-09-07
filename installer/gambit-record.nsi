@@ -4,28 +4,28 @@ Unicode True
 !include "FileFunc.nsh"
 
 !define PRODUCT_NAME "Gambit Record"
-!define PRODUCT_VERSION "0.1.1"
+!define PRODUCT_VERSION "0.1.2"
 Var BackupStamp
 
 Name "${PRODUCT_NAME}"
 Caption "${PRODUCT_NAME} Setup"
 OutFile "${__FILEDIR__}\..\dist\Gambit-Record-Setup.exe"
-InstallDir "C:\Games\GTA San Andreas"
+InstallDir ""
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "0.1.1.0"
+VIProductVersion "0.1.2.0"
 VIAddVersionKey /LANG=1049 "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey /LANG=1049 "FileDescription" "Gambit Record installer for Gambit-RP"
 VIAddVersionKey /LANG=1049 "FileVersion" "${PRODUCT_VERSION}"
 VIAddVersionKey /LANG=1049 "LegalCopyright" "GPL-3.0-only"
 
 !define MUI_ABORTWARNING
-!define MUI_PAGE_CUSTOMFUNCTION_LEAVE VerifyGameDirectory
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${__FILEDIR__}\..\LICENSE"
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE VerifyGameDirectory
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_NOAUTOCLOSE

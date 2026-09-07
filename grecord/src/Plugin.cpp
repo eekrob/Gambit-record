@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <format>
 #include <initializer_list>
@@ -52,10 +53,17 @@ std::atomic_bool g_initialized{};
 std::atomic_bool g_menu_open{};
 std::atomic_bool g_reload_settings{true};
 std::atomic_bool g_recording{};
+std::atomic_bool g_worker_online{};
+std::atomic_bool g_capture_ready{};
+std::atomic_bool g_start_pending{};
+std::atomic_bool g_start_requesting{};
 std::atomic<unsigned> g_upload_percent{};
 std::atomic_bool g_uploading{};
 std::mutex g_state_mutex;
 std::mutex g_ipc_mutex;
+std::mutex g_server_command_mutex;
+std::deque<std::string> g_server_commands;
+std::atomic<std::uintptr_t> g_command_sender{};
 grecord::Logic g_logic;
 std::unique_ptr<grecord::IpcClient> g_ipc;
 json g_status;
@@ -206,15 +214,53 @@ json metadata() {
 void notice(std::string text, std::chrono::seconds duration = std::chrono::seconds(8)) {
   std::scoped_lock lock(g_state_mutex); g_notice = std::move(text); g_notice_until = std::chrono::steady_clock::now() + duration;
 }
-void start_recording() {
+void queue_upload_announcement(const json& state) {
+  auto target=state.value("youtube_last_upload_target_name","");
+  const auto target_id=state.value("youtube_last_upload_target_id",-1);
+  if(target.empty()&&target_id>=0)target="ID "+std::to_string(target_id);
+  SYSTEMTIME now{};GetLocalTime(&now);
+  auto command=grecord::Logic::upload_announcement(target,now.wDay,now.wMonth,now.wYear,now.wHour,now.wMinute);
+  std::scoped_lock lock(g_server_command_mutex);g_server_commands.push_back(grecord::utf8_to_cp1251(command));
+}
+void dispatch_server_command() {
+  const auto sender=g_command_sender.load();if(!sender||!g_send_command)return;
+  std::string command;
+  {std::scoped_lock lock(g_server_command_mutex);if(g_server_commands.empty())return;command=std::move(g_server_commands.front());g_server_commands.pop_front();}
+  g_send_command(reinterpret_cast<void*>(sender),command.c_str());
+}
+std::string friendly_error(const std::string& error) {
+  if (error == "WORKER_OFFLINE") return "модуль записи запускается";
+  if (error == "CAPTURE_NOT_READY") return "захват игры ещё запускается";
+  if (error == "YOUTUBE_DISABLED") return "загрузка на YouTube отключена";
+  if (error == "YOUTUBE_NOT_CONFIGURED") return "эта сборка не настроена для YouTube";
+  return error.empty() ? "неизвестная ошибка" : error;
+}
+void start_recording_now() {
+  if (g_start_requesting.exchange(true)) return;
   auto response = request_worker({{"command", "record_start"}, {"metadata", metadata()}});
-  if (response.value("success", false)) { g_record_started = std::chrono::system_clock::now(); g_recording = true; notice("Запись начата"); }
-  else notice("Не удалось начать запись: " + response.value("error", "unknown"));
+  g_start_requesting = false;
+  if (response.value("success", false)) { g_start_pending = false; g_record_started = std::chrono::system_clock::now(); g_recording = true; notice("Запись начата"); }
+  else {
+    const auto error=response.value("error", "unknown");
+    if(error=="WORKER_OFFLINE"){g_worker_online=false;g_start_pending=true;}
+    else if(error=="CAPTURE_NOT_READY")g_start_pending=true;
+    else g_start_pending=false;
+    notice("Не удалось начать запись: " + friendly_error(error));
+  }
+}
+void start_recording() {
+  if (!g_worker_online || !g_capture_ready) { g_start_pending = true; notice("Запись начнётся автоматически, когда захват игры будет готов"); return; }
+  start_recording_now();
 }
 void stop_recording(bool upload) {
   auto response = request_worker({{"command", "record_stop"}, {"upload", upload}, {"metadata", metadata()}}, 5000);
-  if (response.value("success", false)) { g_recording = false; notice(upload ? "Запись завершена, загрузка поставлена в очередь" : "Запись сохранена локально"); }
-  else notice("Не удалось завершить запись: " + response.value("error", "unknown"));
+  if (response.value("success", false)) {
+    g_recording = false;
+    if (upload && response.value("upload_queued", false)) notice("Запись завершена, загрузка поставлена в очередь");
+    else if (upload) notice("Запись сохранена локально: " + friendly_error(response.value("upload_error", "YOUTUBE_NOT_CONFIGURED")));
+    else notice("Запись сохранена локально");
+  }
+  else notice("Не удалось завершить запись: " + friendly_error(response.value("error", "unknown")));
 }
 
 std::uintptr_t net_game() {
@@ -294,6 +340,7 @@ bool __fastcall incoming_rpc_hook(void* self, void*, const char* data, int lengt
 }
 
 void __fastcall send_command_hook(void* self, void*, const char* raw) {
+  g_command_sender=reinterpret_cast<std::uintptr_t>(self);
   const std::string command = raw ? grecord::cp1251_to_utf8(raw) : std::string{};
   const auto first_space = command.find(' '); const auto word = command.substr(0, first_space);
   const bool local = word == "/grecord" || word == "/estart" || word == "/estop" || word == "/estatus" || word == "/esettings";
@@ -451,8 +498,9 @@ void render_window() {
     if (g_page == Page::recording) {
       page_title("Запись", "Управление доказательством и важными моментами");
       card_begin("##record-state", "ТЕКУЩЕЕ СОСТОЯНИЕ", 112.f);
-      ImGui::TextColored(g_recording ? ImVec4{0xf3 / 255.f, 0x8b / 255.f, 0xa8 / 255.f, 1.f} : ImVec4{0xa6 / 255.f, 0xe3 / 255.f, 0xa1 / 255.f, 1.f},
-                         "%s", g_recording ? "● ИДЁТ ЗАПИСЬ" : "● ГОТОВ К ЗАПИСИ");
+      const bool ready=g_worker_online.load()&&g_capture_ready.load();
+      ImGui::TextColored(g_recording ? ImVec4{0xf3 / 255.f, 0x8b / 255.f, 0xa8 / 255.f, 1.f} : ready ? ImVec4{0xa6 / 255.f, 0xe3 / 255.f, 0xa1 / 255.f, 1.f} : ImVec4{0xf9 / 255.f, 0xe2 / 255.f, 0xaf / 255.f, 1.f},
+                         "%s", g_recording ? "● ИДЁТ ЗАПИСЬ" : ready ? "● ГОТОВ К ЗАПИСИ" : "● ПОДГОТОВКА ЗАХВАТА");
       std::string target; { std::scoped_lock lock(g_state_mutex); target = g_logic.target_name(); }
       ImGui::TextDisabled("Наблюдение: %s", target.empty() ? "не выбрано" : target.c_str());
       card_end();
@@ -472,8 +520,12 @@ void render_window() {
       ImGui::TextDisabled("Приватность всех публикаций: доступ по ссылке");
       card_end();
       card_begin("##upload-state", "СОСТОЯНИЕ ЗАГРУЗКИ", 142.f);
-      ImGui::Text("%s", g_uploading ? "Загрузка выполняется" : "Очередь свободна");
+      const auto phase=status.value("youtube_upload_phase",""); const auto pending=status.value("youtube_upload_pending",0u);
+      ImGui::Text("%s", g_uploading ? phase=="preparing" ? "Подготовка файла" : "Загрузка выполняется" : pending ? "Ожидание повторной попытки" : "Очередь свободна");
       if (g_uploading) ImGui::ProgressBar(g_upload_percent / 100.f, {-1, 22}, std::format("{}%", g_upload_percent.load()).c_str());
+      if (pending) ImGui::TextDisabled("В очереди: %u",pending);
+      const auto upload_error=status.value("youtube_last_upload_error","");
+      if (!upload_error.empty()) ImGui::TextWrapped("Последняя ошибка: %s",upload_error.c_str());
       if (!last_url.empty()) ImGui::TextWrapped("Последняя ссылка: %s", last_url.c_str());
       card_end();
     } else if (g_page == Page::settings) {
@@ -509,7 +561,7 @@ void render_window() {
       }
     } else {
       page_title("О программе", "Информация о сборке и используемых компонентах");
-      card_begin("##about", "GAMBIT RECORD 0.1.1", 190.f);
+      card_begin("##about", "GAMBIT RECORD 0.1.2", 190.f);
       ImGui::TextWrapped("Нативный ASI-плагин записи доказательств для Gambit-RP.");
       ImGui::Spacing();
       ImGui::TextWrapped("Интерфейс, управление курсором и схема SA-MP-событий используют подходы GAdmin (GPLv3), commit c31749c0.");
@@ -523,6 +575,7 @@ void render_window() {
 }
 
 HRESULT WINAPI present_hook(IDirect3DDevice9* device, const RECT* source, const RECT* destination, HWND override_window, const RGNDATA* dirty) {
+  dispatch_server_command();
   static bool imgui_ready{};
   if (!imgui_ready) {
     D3DDEVICE_CREATION_PARAMETERS params{}; device->GetCreationParameters(&params); g_window = params.hFocusWindow;
@@ -550,19 +603,28 @@ HRESULT WINAPI reset_hook(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* param
 bool launch_worker() {
   const auto worker = game_directory() / "GambitRecord.exe";
   if (!std::filesystem::exists(worker)) { notice("GambitRecord.exe не найден в папке игры"); return false; }
-  const std::wstring args = L"--parent-pid " + std::to_wstring(GetCurrentProcessId()) + L" --pipe \"" + pipe_name() + L"\"";
-  SHELLEXECUTEINFOW info{sizeof(info)}; info.fMask = SEE_MASK_NOCLOSEPROCESS; info.lpVerb = L"open";
-  info.lpFile = worker.c_str(); info.lpParameters = args.c_str(); info.lpDirectory = game_directory().c_str(); info.nShow = SW_HIDE;
-  if (!ShellExecuteExW(&info)) return false; if (info.hProcess) CloseHandle(info.hProcess); return true;
+  std::wstring command=L"\""+worker.wstring()+L"\" --parent-pid "+std::to_wstring(GetCurrentProcessId())+L" --pipe \""+pipe_name()+L"\"";
+  STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{}; const auto directory=game_directory().wstring();
+  if(!CreateProcessW(worker.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,directory.c_str(),&startup,&process))return false;
+  CloseHandle(process.hThread);CloseHandle(process.hProcess);return true;
 }
 
 void status_loop() {
+  unsigned offline_polls{};
+  std::string announced_upload_url;
   while (g_running) {
     auto state = request_worker({{"command", "status"}}, 500);
     if (state.value("success", false)) {
-      std::scoped_lock lock(g_state_mutex); g_status = state; g_recording = state.value("recording", false);
-      g_uploading = state.value("youtube_upload_in_progress", false); g_upload_percent = state.value("youtube_upload_percent", 0u);
-      if (state.value("youtube_last_upload_success", false)) g_last_url = state.value("youtube_last_upload_url", "");
+      offline_polls=0;g_worker_online=true;g_capture_ready=state.value("capture",false);
+      { std::scoped_lock lock(g_state_mutex); g_status = state; g_recording = state.value("recording", false);
+        g_uploading = state.value("youtube_upload_in_progress", false); g_upload_percent = state.value("youtube_upload_percent", 0u);
+        if (state.value("youtube_last_upload_success", false)) g_last_url = state.value("youtube_last_upload_url", ""); }
+      const auto uploaded_url=state.value("youtube_last_upload_success",false)?state.value("youtube_last_upload_url",""):"";
+      if(!uploaded_url.empty()&&uploaded_url!=announced_upload_url){queue_upload_announcement(state);announced_upload_url=uploaded_url;}
+      if(g_start_pending&&g_capture_ready&&!g_recording)start_recording_now();
+    } else {
+      g_worker_online=false;g_capture_ready=false;
+      if(++offline_polls>=4){offline_polls=0;launch_worker();}
     }
     Sleep(500);
   }

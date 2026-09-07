@@ -21,7 +21,13 @@ void UploadQueue::stop() { if (thread_.joinable()) { thread_.request_stop(); thr
 
 void UploadQueue::load() {
   std::scoped_lock lock(mutex_); jobs_.clear(); std::ifstream input(state_file_); if (!input) return;
-  try { auto root=nlohmann::json::parse(input); for (const auto& j:root.value("jobs",nlohmann::json::array())) jobs_.push_back({j.value("id",""),j.value("path",""),metadata_from(j.value("metadata",nlohmann::json::object())),j.value("attempts",0u),j.value("next_attempt",0ll),j.value("upload_id","")}); }
+  try {
+    auto root=nlohmann::json::parse(input);
+    for (const auto& j:root.value("jobs",nlohmann::json::array())) {
+      Job job{j.value("id",""),j.value("path",""),metadata_from(j.value("metadata",nlohmann::json::object())),j.value("attempts",0u),j.value("next_attempt",0ll),j.value("upload_id","")};
+      if (!job.id.empty() && !job.path.empty()) jobs_.push_back(std::move(job));
+    }
+  }
   catch (...) { log_warn("UPLOAD_QUEUE_INVALID"); }
 }
 void UploadQueue::save_locked() const {
@@ -35,8 +41,11 @@ std::string UploadQueue::enqueue(const std::filesystem::path& path, const Eviden
   jobs_.push_back({id,path,metadata,0,unix_now(),{}}); save_locked(); return id;
 }
 nlohmann::json UploadQueue::status() const {
-  std::scoped_lock lock(mutex_); const auto sent=sent_.load(),total=total_.load(); nlohmann::json result{{"in_progress",!active_id_.empty()},{"active_id",active_id_},{"pending",jobs_.size()},{"sent_bytes",sent},{"total_bytes",total},{"percent",total?static_cast<unsigned>(sent*100/total):0}};
-  if(last_) {result["last_success"]=last_->success;result["last_url"]=last_->url;result["last_error"]=last_->error;} return result;
+  std::scoped_lock lock(mutex_); const auto sent=sent_.load(),total=total_.load(); const auto active=!active_id_.empty();
+  nlohmann::json result{{"in_progress",active},{"active_id",active_id_},{"phase",active_phase_},{"pending",jobs_.size()-(active?1u:0u)},{"sent_bytes",sent},{"total_bytes",total},{"percent",total?static_cast<unsigned>(sent*100/total):0}};
+  if(last_) {result["last_success"]=last_->success;result["last_url"]=last_->url;result["last_error"]=last_->error;}
+  if(last_metadata_) {result["last_target_id"]=last_metadata_->target_id;result["last_target_name"]=last_metadata_->target_name;}
+  return result;
 }
 void UploadQueue::configure(Config::Broker settings) { std::scoped_lock lock(mutex_); settings_ = std::move(settings); }
 void UploadQueue::enforce_archive_limit(const std::filesystem::path& directory, std::uint64_t limit_bytes,
@@ -59,10 +68,11 @@ void UploadQueue::enforce_archive_limit(const std::filesystem::path& directory, 
 void UploadQueue::run(std::stop_token token) {
   while(!token.stop_requested()) {
     Job job; Config::Broker settings; bool found=false;
-    { std::scoped_lock lock(mutex_); settings=settings_; const auto now=unix_now(); auto it=std::find_if(jobs_.begin(),jobs_.end(),[&](const Job& value){return value.next_attempt<=now;}); if(it!=jobs_.end()){job=*it;active_id_=job.id;sent_=0;total_=0;found=true;} }
+    { std::scoped_lock lock(mutex_); settings=settings_; const auto now=unix_now(); auto it=std::find_if(jobs_.begin(),jobs_.end(),[&](const Job& value){return value.next_attempt<=now;}); if(it!=jobs_.end()){job=*it;active_id_=job.id;active_phase_="preparing";sent_=0;std::error_code ec;total_=std::filesystem::file_size(job.path,ec);if(ec)total_=0;found=true;} }
     if(!found){for(int i=0;i<10&&!token.stop_requested();++i)Sleep(100);continue;}
-    auto result=BrokerUploader(settings).upload(job.path,job.metadata,[this](auto sent,auto total){sent_=sent;total_=total;},job.upload_id,token);
-    { std::scoped_lock lock(mutex_); last_=result; active_id_.clear(); auto it=std::find_if(jobs_.begin(),jobs_.end(),[&](const Job& value){return value.id==job.id;}); if(it!=jobs_.end()){ if(result.success){jobs_.erase(it);}else{it->upload_id=result.upload_id;++it->attempts;const auto backoff=std::min<std::int64_t>(3600,static_cast<std::int64_t>(settings.retry_seconds)*(1ll<<std::min(it->attempts,6u)));it->next_attempt=unix_now()+backoff;} save_locked(); }
+    log_info("BROKER_UPLOAD_STARTED", "path=\""+job.path.string()+"\"");
+    auto result=BrokerUploader(settings).upload(job.path,job.metadata,[this](auto sent,auto total){sent_=sent;total_=total;std::scoped_lock lock(mutex_);active_phase_="uploading";},job.upload_id,token);
+    { std::scoped_lock lock(mutex_); last_=result; last_metadata_=job.metadata; active_id_.clear(); active_phase_.clear(); auto it=std::find_if(jobs_.begin(),jobs_.end(),[&](const Job& value){return value.id==job.id;}); if(it!=jobs_.end()){ if(result.success){log_info("BROKER_UPLOAD_COMPLETED","url=\""+result.url+"\"");jobs_.erase(it);}else if(!result.retryable){log_error("BROKER_UPLOAD_REJECTED",result.error);jobs_.erase(it);}else if(it->attempts>=7){log_error("BROKER_UPLOAD_GAVE_UP",result.error);jobs_.erase(it);}else{log_warn("BROKER_UPLOAD_RETRY",result.error);it->upload_id=result.upload_id;++it->attempts;const auto backoff=std::min<std::int64_t>(3600,static_cast<std::int64_t>(settings.retry_seconds)*(1ll<<std::min(it->attempts,6u)));it->next_attempt=unix_now()+backoff;} save_locked(); }
     }
   }
 }
