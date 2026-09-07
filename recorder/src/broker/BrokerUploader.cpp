@@ -4,9 +4,7 @@
 #include <winhttp.h>
 #include <algorithm>
 #include <array>
-#include <cstddef>
 #include <fstream>
-#include <functional>
 #include <nlohmann/json.hpp>
 #include <utility>
 #include <vector>
@@ -68,24 +66,13 @@ bool retryable_status(DWORD status) {
 }
 Response request(HINTERNET connection, const Endpoint& endpoint, const wchar_t* method,
                  const std::wstring& path, const std::wstring& extra_headers,
-                 const void* body, DWORD size, const std::function<void(DWORD)>& write_progress = {}) {
+                 const void* body, DWORD size) {
   Handle req{WinHttpOpenRequest(connection, method, (endpoint.prefix + path).c_str(), nullptr,
                                 WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, endpoint.flags)};
   if (!req) return {};
   std::wstring headers = L"X-GRecord-Key: " + widen(GRECORD_BROKER_KEY) + L"\r\n" + extra_headers;
-  if (!write_progress) {
-    if (!WinHttpSendRequest(req, headers.c_str(), static_cast<DWORD>(-1L), const_cast<void*>(body), size, size, 0)
-        || !WinHttpReceiveResponse(req, nullptr)) return {};
-    return {response_status(req), read_response(req)};
-  }
-  if (!WinHttpSendRequest(req, headers.c_str(), static_cast<DWORD>(-1L), WINHTTP_NO_REQUEST_DATA, 0, size, 0)) return {};
-  const auto* bytes = static_cast<const std::byte*>(body); DWORD sent{};
-  while (sent < size) {
-    const DWORD amount = std::min<DWORD>(64 * 1024, size - sent); DWORD written{};
-    if (!WinHttpWriteData(req, bytes + sent, amount, &written) || !written) return {};
-    sent += written; if (write_progress) write_progress(sent);
-  }
-  if (!WinHttpReceiveResponse(req, nullptr)) return {};
+  if (!WinHttpSendRequest(req, headers.c_str(), static_cast<DWORD>(-1L), const_cast<void*>(body), size, size, 0)
+      || !WinHttpReceiveResponse(req, nullptr)) return {};
   return {response_status(req), read_response(req)};
 }
 std::string json_string(const std::string& body, const char* key) {
@@ -113,7 +100,7 @@ std::string BrokerUploader::sha256(const std::filesystem::path& file) {
   if (BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&object_size), sizeof(object_size), &cb, 0) != 0) { BCryptCloseAlgorithmProvider(algorithm, 0); return {}; }
   std::vector<unsigned char> object(object_size); std::array<unsigned char, 32> digest{};
   if (BCryptCreateHash(algorithm, &hash, object.data(), object_size, nullptr, 0, 0) != 0) { BCryptCloseAlgorithmProvider(algorithm, 0); return {}; }
-  std::ifstream input(file, std::ios::binary); std::array<char, 1024 * 1024> buffer{};
+  std::ifstream input(file, std::ios::binary); std::vector<char> buffer(1024 * 1024);
   while (input) { input.read(buffer.data(), buffer.size()); const auto got = input.gcount(); if (got > 0) BCryptHashData(hash, reinterpret_cast<PUCHAR>(buffer.data()), static_cast<ULONG>(got), 0); }
   const bool ok = BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) == 0;
   BCryptDestroyHash(hash); BCryptCloseAlgorithmProvider(algorithm, 0);
@@ -143,7 +130,7 @@ UploadResult BrokerUploader::upload(const std::filesystem::path& file, const Evi
   const auto description = "Server: " + metadata.server + "\nObserved player: " + metadata.target_name +
       (metadata.target_id >= 0 ? " [" + std::to_string(metadata.target_id) + "]" : "") +
       "\nCommand: " + metadata.punishment_command + "\nReason: " + metadata.punishment_reason +
-      "\nRecording period: " + metadata.recording_period + "\nGambit Record 0.1.2\nSHA-256: " + hash;
+      "\nRecording period: " + metadata.recording_period + "\nGambit Record 0.1.3\nSHA-256: " + hash;
   std::uint64_t offset{};
   result.upload_id = std::move(resume_id);
   if (!result.upload_id.empty()) {
@@ -167,7 +154,7 @@ UploadResult BrokerUploader::upload(const std::filesystem::path& file, const Evi
     if (result.upload_id.empty()) { result.error = "broker returned no upload id"; return result; }
   }
 
-  std::ifstream input(file, std::ios::binary); constexpr std::uint64_t chunk_size = 8ull * 1024 * 1024;
+  std::ifstream input(file, std::ios::binary); constexpr std::uint64_t chunk_size = 1ull * 1024 * 1024;
   std::vector<char> buffer(static_cast<std::size_t>(chunk_size)); input.seekg(static_cast<std::streamoff>(offset));
   if (progress) progress(offset, total);
   while (offset < total) {
@@ -178,7 +165,7 @@ UploadResult BrokerUploader::upload(const std::filesystem::path& file, const Evi
     const std::wstring headers = L"Content-Type: video/mp4\r\nContent-Range: bytes " + std::to_wstring(offset) +
         L"-" + std::to_wstring(offset + count - 1) + L"/" + std::to_wstring(total) + L"\r\n";
     auto uploaded = request(connection, endpoint, L"PUT", L"/v1/uploads/" + widen(result.upload_id), headers,
-                            buffer.data(), static_cast<DWORD>(count), [&, base=offset](DWORD sent){ if(progress) progress(base+sent,total); });
+                            buffer.data(), static_cast<DWORD>(count));
     if (uploaded.status == 200 || uploaded.status == 201) {
       result.video_id = json_string(uploaded.body, "videoId"); result.url = json_string(uploaded.body, "url");
       offset += count; if (progress) progress(offset, total); break;
