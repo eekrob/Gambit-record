@@ -53,7 +53,7 @@ int main() {
     settings.scale = 99; settings.opacity = -1;
     check(save_settings(path, settings, error), "Atomic replacement failed");
     loaded = load_settings(path, error);
-    check(loaded.scale == 2 && loaded.opacity == .2f, "Invalid settings not bounded");
+    check(close(loaded.scale, 2.f) && close(loaded.opacity, .2f), "Invalid settings not bounded");
     check(!std::filesystem::exists(path.wstring() + L".tmp"), "Temporary file left after save");
     std::ofstream(path) << "{partial";
     loaded = load_settings(path, error);
