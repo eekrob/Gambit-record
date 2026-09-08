@@ -9,7 +9,7 @@ Gambit Record — GPLv3-инструмент для записи доказат�
 
 Release-сборка загружает записи на общий YouTube-канал Gambit Record. Видео публикуются как `unlisted`.
 
-Пользователю не нужны OAuth, Cloudflare, токены или собственный сервер. Установка выполняется через NSIS-инсталлятор.
+Пользователю не нужны OAuth, Cloudflare, токены или собственный сервер. Релиз поставляется ZIP-архивом: его нужно распаковать в папку со сборкой GTA:SA / SA-MP.
 
 Общий YouTube refresh token хранится только в Cloudflare Secrets и не передаётся клиенту.
 
@@ -99,7 +99,6 @@ Release-сборка загружает записи на общий YouTube-к�
 grecord/                 ASI, ImGui, SA-MP hooks, тесты
 recorder/                WGC/WASAPI/Media Foundation worker
 broker/                  Cloudflare Worker + Durable Objects
-installer/               NSIS installer и миграция Evidence
 .github/workflows/       CI и release pipeline
 ```
 
@@ -147,7 +146,7 @@ MinHook и `nlohmann/json` также зафиксированы в CMake.
 
 ## Установка
 
-Release installer устанавливает:
+Скачайте `G-Record.zip` со страницы релиза, закройте игру и распакуйте архив в папку со сборкой. В архиве находится папка `G-Record`; перенесите её содержимое в корень сборки GTA:SA / SA-MP:
 
 ```text
 <GTA>/grecord.asi
@@ -155,33 +154,7 @@ Release installer устанавливает:
 <GTA>/grecord/config.json
 ```
 
-`config.json` создаётся только при его отсутствии.
-
-Если найден старый:
-
-```text
-moonloader/evidence.lua
-```
-
-он переименовывается в `.bak` с timestamp.
-
-Старый config копируется в:
-
-```text
-grecord/migration
-```
-
-Существующие записи не удаляются.
-
-Сборка установщика:
-
-```powershell
-./installer/build-installer.ps1 `
-  -AsiPath ./build-asi/Release/grecord.asi `
-  -WorkerPath ./build/bin/Release/GambitRecord.exe
-```
-
-Требуется NSIS 3.
+Перед обновлением сохраните свои `grecord/config.json` и `grecord/ui.json`, если они уже настроены: архив содержит конфигурацию по умолчанию. Записи находятся в выбранной вами папке и архивом не затрагиваются.
 
 ## Broker
 
@@ -220,7 +193,7 @@ OAuth credentials и refresh token не должны попадать:
 - в клиент;
 - в репозиторий;
 - в CI-логи;
-- в installer.
+- в release-архив.
 
 Durable Objects хранят только:
 

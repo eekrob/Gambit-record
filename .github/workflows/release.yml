@@ -38,14 +38,22 @@ jobs:
             objdump -p build-asi/grecord.asi | grep -i 'DLL Name:' >&2
             exit 1
           fi
-      - name: Install NSIS
-        shell: pwsh
-        run: choco install nsis --no-progress -y
-      - name: Build installer and checksums
+      - name: Package release archive and checksums
         shell: pwsh
         run: |
-          ./installer/build-installer.ps1 -AsiPath ./build-asi/grecord.asi -WorkerPath ./build/bin/GambitRecord.exe
-          Get-FileHash ./dist/Gambit-Record-Setup.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  Gambit-Record-Setup.exe" } | Set-Content ./dist/SHA256SUMS.txt
+          $ErrorActionPreference = 'Stop'
+          $package = './dist/G-Record'
+          New-Item -ItemType Directory -Force -Path "$package/grecord/licenses" | Out-Null
+          Copy-Item ./build-asi/grecord.asi "$package/grecord.asi"
+          Copy-Item ./build/bin/GambitRecord.exe "$package/GambitRecord.exe"
+          Copy-Item ./config.example.json "$package/grecord/config.json"
+          Copy-Item ./LICENSE "$package/grecord/licenses/LICENSE"
+          Copy-Item ./THIRD_PARTY_NOTICES.md "$package/grecord/licenses/THIRD_PARTY_NOTICES.md"
+          Copy-Item ./grecord/resources/OFL-NotoSans.txt "$package/grecord/licenses/OFL-NotoSans.txt"
+          Copy-Item ./grecord/resources/CC-BY-4.0-Coolicons.txt "$package/grecord/licenses/CC-BY-4.0-Coolicons.txt"
+          Compress-Archive -Path $package -DestinationPath ./dist/G-Record.zip -Force
+          Remove-Item -LiteralPath $package -Recurse -Force
+          Get-FileHash ./dist/G-Record.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  G-Record.zip" } | Set-Content ./dist/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: release
