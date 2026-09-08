@@ -8,6 +8,9 @@
 using json = nlohmann::json;
 namespace evidence {
 namespace {
+std::string path_utf8(const std::filesystem::path& path) {
+  const auto value = path.u8string(); return {value.begin(), value.end()};
+}
 std::wstring widen(const std::string& value) {
   if (value.empty()) return {};
   const int n = MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0);
@@ -57,15 +60,15 @@ Config Config::load_or_create(const std::filesystem::path& path) {
   c.broker.endpoint = value_at(j, "broker", "endpoint", c.broker.endpoint);
   c.broker.channel_title = value_at(j, "broker", "channel_title", c.broker.channel_title);
   c.broker.retry_seconds = value_at(j, "broker", "retry_seconds", c.broker.retry_seconds);
-  c.recording.directory = value_at(j, "recording", "directory", c.recording.directory.string());
+  c.recording.directory = widen(value_at(j, "recording", "directory", path_utf8(c.recording.directory)));
   c.recording.archive_limit_gb = value_at(j, "recording", "archive_limit_gb", c.recording.archive_limit_gb);
   c.replay.enabled = value_at(j, "replay", "enabled", c.replay.enabled);
   c.replay.auto_start = value_at(j, "replay", "auto_start", c.replay.auto_start);
   c.replay.seconds = value_at(j, "replay", "seconds", c.replay.seconds);
   c.replay.storage = value_at(j, "replay", "storage", c.replay.storage);
-  c.replay.cache_directory = value_at(j, "replay", "cache_directory", c.replay.cache_directory.string());
+  c.replay.cache_directory = widen(value_at(j, "replay", "cache_directory", path_utf8(c.replay.cache_directory)));
   c.replay.segment_seconds = value_at(j, "replay", "segment_seconds", c.replay.segment_seconds);
-  c.logging.directory = value_at(j, "logging", "directory", c.logging.directory.string());
+  c.logging.directory = widen(value_at(j, "logging", "directory", path_utf8(c.logging.directory)));
   c.logging.level = value_at(j, "logging", "level", c.logging.level);
   return c;
 }
@@ -76,9 +79,9 @@ void Config::save(const std::filesystem::path& path) const {
     {"video", {{"fps", video.fps}, {"bitrate", video.bitrate}, {"codec", video.codec}, {"prefer_hardware_encoder", video.prefer_hardware_encoder}, {"keyframe_interval_seconds", video.keyframe_interval_seconds}, {"queue_frames", video.queue_frames}}},
     {"audio", {{"enabled", audio.enabled}, {"mode", audio.mode}, {"microphone", audio.microphone}}},
     {"broker", {{"enabled", broker.enabled}, {"endpoint", broker.endpoint}, {"channel_title", broker.channel_title}, {"retry_seconds", broker.retry_seconds}}},
-    {"recording", {{"directory", recording.directory.string()}, {"archive_limit_gb", recording.archive_limit_gb}}},
-    {"replay", {{"enabled", replay.enabled}, {"auto_start", replay.auto_start}, {"seconds", replay.seconds}, {"storage", replay.storage}, {"cache_directory", replay.cache_directory.string()}, {"segment_seconds", replay.segment_seconds}}},
-    {"logging", {{"directory", logging.directory.string()}, {"level", logging.level}}}
+    {"recording", {{"directory", path_utf8(recording.directory)}, {"archive_limit_gb", recording.archive_limit_gb}}},
+    {"replay", {{"enabled", replay.enabled}, {"auto_start", replay.auto_start}, {"seconds", replay.seconds}, {"storage", replay.storage}, {"cache_directory", path_utf8(replay.cache_directory)}, {"segment_seconds", replay.segment_seconds}}},
+    {"logging", {{"directory", path_utf8(logging.directory)}, {"level", logging.level}}}
   };
   std::ofstream out(path, std::ios::trunc);
   if (!out) throw std::runtime_error("Cannot write config: " + path.string());

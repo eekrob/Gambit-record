@@ -8,6 +8,11 @@ if (Test-Path -LiteralPath $payloadRoot) { Remove-Item -LiteralPath $payloadRoot
 Copy-Item -LiteralPath $AsiPath -Destination (Join-Path $payloadRoot 'grecord.asi')
 Copy-Item -LiteralPath $WorkerPath -Destination (Join-Path $payloadRoot 'GambitRecord.exe')
 Copy-Item -LiteralPath (Join-Path $repo 'config.example.json') -Destination (Join-Path $payloadRoot 'config.json')
+$licensesPath = Join-Path $payloadRoot 'licenses'
+[IO.Directory]::CreateDirectory($licensesPath) | Out-Null
+foreach ($license in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'grecord/resources/OFL-NotoSans.txt', 'grecord/resources/CC-BY-4.0-Coolicons.txt')) {
+    Copy-Item -LiteralPath (Join-Path $repo $license) -Destination $licensesPath
+}
 [IO.Directory]::CreateDirectory((Join-Path $repo 'dist')) | Out-Null
 $candidates = @(
     (Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'),

@@ -5,6 +5,26 @@
 #include <fstream>
 
 using namespace evidence;
+TEST_CASE("UTF-8 recording directories survive save load and resolution") {
+  const auto base = std::filesystem::temp_directory_path() / L"grecord-пути-тест";
+  std::filesystem::create_directories(base);
+  const auto path = base / "config.json";
+  Config config;
+  config.recording.directory = L"grecord/Мои записи";
+  config.replay.cache_directory = L"grecord/Кэш";
+  config.logging.directory = L"grecord/Журнал";
+  config.save(path);
+  auto loaded = Config::load_or_create(path);
+  REQUIRE(loaded.recording.directory == config.recording.directory);
+  REQUIRE(loaded.replay.cache_directory == config.replay.cache_directory);
+  REQUIRE(loaded.logging.directory == config.logging.directory);
+  loaded.resolve_paths(base);
+  loaded.save(path);
+  const auto restored = Config::load_or_create(path);
+  REQUIRE(restored.recording.directory.is_absolute());
+  REQUIRE(restored.recording.directory == base / L"grecord/Мои записи");
+  std::filesystem::remove_all(base);
+}
 TEST_CASE("filename sanitization removes Windows metacharacters") { REQUIRE(sanitize_filename("John:<Smith>?*") == "John__Smith___"); REQUIRE(sanitize_filename("name. ") == "name"); }
 TEST_CASE("cache path validation rejects paths outside grecord") {
   auto base = std::filesystem::temp_directory_path() / "grecord_config_test"; std::filesystem::create_directories(base / "grecord/cache"); Config config; config.resolve_paths(base); config.validate(base); config.replay.cache_directory = base.parent_path() / "foreign-cache"; bool threw = false; try { config.validate(base); } catch (...) { threw = true; } REQUIRE(threw); std::filesystem::remove_all(base);

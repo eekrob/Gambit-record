@@ -4,7 +4,7 @@ Unicode True
 !include "FileFunc.nsh"
 
 !define PRODUCT_NAME "Gambit Record"
-!define PRODUCT_VERSION "0.1.4"
+!define PRODUCT_VERSION "0.1.5"
 Var BackupStamp
 
 Name "${PRODUCT_NAME}"
@@ -16,7 +16,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "0.1.4.0"
+VIProductVersion "0.1.5.0"
 VIAddVersionKey /LANG=1049 "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey /LANG=1049 "FileDescription" "Gambit Record installer for Gambit-RP"
 VIAddVersionKey /LANG=1049 "FileVersion" "${PRODUCT_VERSION}"
@@ -62,6 +62,10 @@ Section "Gambit Record" SEC_MAIN
   SetOverwrite off
   File /oname=config.json "${__FILEDIR__}\payload\config.json"
   SetOverwrite on
+
+  ; Attribution and font/icon licenses accompany the embedded resources.
+  SetOutPath "$INSTDIR\grecord\licenses"
+  File "${__FILEDIR__}\payload\licenses\*"
 
   ; One-release migration from the old MoonLoader build.
   IfFileExists "$INSTDIR\moonloader\evidence.lua" 0 migration_done

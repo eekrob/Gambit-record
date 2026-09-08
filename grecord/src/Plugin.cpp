@@ -1,10 +1,11 @@
 // Gambit Record - ASI integration for GTA:SA / SA-MP.
 // Portions of the version/address strategy are derived from GAdmin at
-// c31749c02f3d76c1ab0f8f562c8dae0dc91152 (GPL-3.0-only).
+// c31749c02f3d76c1ab0f8ebf562c8dae0dc91152 (GPL-3.0-only).
 
 #include "grecord/BitReader.hpp"
 #include "grecord/IpcClient.hpp"
 #include "grecord/Logic.hpp"
+#include "grecord/UiStyle.hpp"
 #include <Windows.h>
 #include <shellapi.h>
 #include <d3d9.h>
@@ -74,11 +75,24 @@ std::chrono::steady_clock::time_point g_notice_until;
 std::chrono::system_clock::time_point g_record_started;
 enum class Prompt { none, start, finish, missing };
 Prompt g_prompt{Prompt::none};
+std::atomic_bool g_dismiss_prompt{};
 enum class Page { recording, uploads, settings, about };
 Page g_page{Page::recording};
 ImFont* g_font_regular{};
 ImFont* g_font_bold{};
 bool g_cursor_owned{};
+grecord::ui::Settings g_ui;
+grecord::ui::Theme g_theme, g_external_theme;
+grecord::ui::ThemeState g_theme_state{grecord::ui::ThemeState::missing};
+grecord::ui::Fonts g_fonts;
+std::mutex g_theme_mutex;
+bool g_hud_dragging{};
+bool g_sidebar_expanded{};
+float g_sidebar_width{};
+float g_window_alpha{};
+float g_page_alpha{1.f};
+Page g_next_page{Page::recording};
+double g_page_transition{-1};
 
 using PresentFn = HRESULT(WINAPI*)(IDirect3DDevice9*, const RECT*, const RECT*, HWND, const RGNDATA*);
 using ResetFn = HRESULT(WINAPI*)(IDirect3DDevice9*, D3DPRESENT_PARAMETERS*);
@@ -146,41 +160,6 @@ void update_cursor(bool interactive) {
   g_cursor_owned = interactive;
 }
 
-void apply_gadmin_style() {
-  auto& style = ImGui::GetStyle();
-  style.AntiAliasedLines = true; style.AntiAliasedFill = true;
-  style.IndentSpacing = 0.f; style.ScrollbarSize = 10.f; style.GrabMinSize = 10.f;
-  style.WindowBorderSize = 1.f; style.ChildBorderSize = 1.f; style.PopupBorderSize = 1.f;
-  style.FrameBorderSize = 1.f; style.TabBorderSize = 1.f;
-  style.WindowRounding = 8.f; style.ChildRounding = 8.f; style.PopupRounding = 8.f;
-  style.FrameRounding = 8.f; style.ScrollbarRounding = 5.f; style.GrabRounding = 5.f; style.TabRounding = 5.f;
-  style.WindowPadding = {8.f, 8.f}; style.FramePadding = {8.f, 6.f};
-  style.ItemSpacing = {7.f, 7.f}; style.ItemInnerSpacing = {5.f, 5.f};
-  style.ButtonTextAlign = {.5f, .5f}; style.SelectableTextAlign = {.5f, .5f};
-
-  const ImVec4 surface0{0x1e / 255.f, 0x1e / 255.f, 0x2e / 255.f, 1.f};
-  const ImVec4 surface1{0x18 / 255.f, 0x18 / 255.f, 0x25 / 255.f, 1.f};
-  const ImVec4 text0{0xcd / 255.f, 0xd6 / 255.f, 0xf4 / 255.f, 1.f};
-  const ImVec4 text1{0xba / 255.f, 0xc2 / 255.f, 0xde / 255.f, 1.f};
-  const ImVec4 overlay0{0x31 / 255.f, 0x32 / 255.f, 0x44 / 255.f, 1.f};
-  const ImVec4 overlay1{0x45 / 255.f, 0x47 / 255.f, 0x5a / 255.f, 1.f};
-  const ImVec4 overlay2{0x58 / 255.f, 0x5b / 255.f, 0x70 / 255.f, 1.f};
-  auto* colors = style.Colors;
-  colors[ImGuiCol_Text] = text0; colors[ImGuiCol_TextDisabled] = text1;
-  colors[ImGuiCol_WindowBg] = surface0; colors[ImGuiCol_ChildBg] = surface1; colors[ImGuiCol_PopupBg] = surface0;
-  colors[ImGuiCol_Border] = overlay2; colors[ImGuiCol_BorderShadow] = {0, 0, 0, 0};
-  colors[ImGuiCol_FrameBg] = overlay0; colors[ImGuiCol_FrameBgHovered] = overlay1; colors[ImGuiCol_FrameBgActive] = overlay2;
-  colors[ImGuiCol_Button] = overlay0; colors[ImGuiCol_ButtonHovered] = overlay1; colors[ImGuiCol_ButtonActive] = overlay2;
-  colors[ImGuiCol_Header] = overlay0; colors[ImGuiCol_HeaderHovered] = overlay1; colors[ImGuiCol_HeaderActive] = overlay2;
-  colors[ImGuiCol_Separator] = overlay0; colors[ImGuiCol_SeparatorHovered] = overlay1; colors[ImGuiCol_SeparatorActive] = overlay2;
-  colors[ImGuiCol_ScrollbarBg] = surface1; colors[ImGuiCol_ScrollbarGrab] = overlay0;
-  colors[ImGuiCol_ScrollbarGrabHovered] = overlay1; colors[ImGuiCol_ScrollbarGrabActive] = overlay2;
-  colors[ImGuiCol_CheckMark] = {0xa6 / 255.f, 0xe3 / 255.f, 0xa1 / 255.f, 1.f};
-  colors[ImGuiCol_SliderGrab] = overlay2; colors[ImGuiCol_SliderGrabActive] = text1;
-  colors[ImGuiCol_ResizeGrip] = colors[ImGuiCol_ResizeGripHovered] = colors[ImGuiCol_ResizeGripActive] = {0, 0, 0, 0};
-  colors[ImGuiCol_ModalWindowDimBg] = {0, 0, 0, .62f};
-}
-
 std::filesystem::path game_directory() {
   std::wstring path(32768, L'\0'); const auto n = GetModuleFileNameW(g_module, path.data(), path.size());
   path.resize(n); return std::filesystem::path(path).parent_path();
@@ -213,6 +192,41 @@ json metadata() {
 
 void notice(std::string text, std::chrono::seconds duration = std::chrono::seconds(8)) {
   std::scoped_lock lock(g_state_mutex); g_notice = std::move(text); g_notice_until = std::chrono::steady_clock::now() + duration;
+}
+
+void save_ui() {
+  std::string error;
+  if (!grecord::ui::save_settings(game_directory() / "grecord" / "ui.json", g_ui, error))
+    notice("Не удалось сохранить настройки интерфейса: " + error);
+}
+
+void copy_link(const std::string& value) {
+  const auto count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
+  if (!count || !OpenClipboard(g_window)) { notice("Не удалось открыть буфер обмена"); return; }
+  auto memory = GlobalAlloc(GMEM_MOVEABLE, (count + 1) * sizeof(wchar_t));
+  auto* text = memory ? static_cast<wchar_t*>(GlobalLock(memory)) : nullptr;
+  bool copied = false;
+  if (text) {
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), text, count);
+    text[count] = 0; GlobalUnlock(memory);
+    copied = EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, memory);
+  }
+  if (!copied && memory) GlobalFree(memory);
+  CloseClipboard(); notice(copied ? "Ссылка скопирована" : "Не удалось скопировать ссылку");
+}
+
+void open_recordings(const json& status) {
+  const auto value = status.value("recording_directory", "");
+  const auto count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
+  if (!count) { notice("Папка записей пока недоступна: дождитесь подключения recorder"); return; }
+  std::wstring path(count, L'\0');
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), path.data(), count);
+  std::error_code error;
+  if (!std::filesystem::path(path).is_absolute() || !std::filesystem::is_directory(path, error)) {
+    notice("Папка записей пока не создана или недоступна"); return;
+  }
+  const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(g_window, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+  notice(result > 32 ? "Папка записей открыта" : "Не удалось открыть папку записей");
 }
 void queue_upload_announcement(const json& state) {
   auto target=state.value("youtube_last_upload_target_name","");
@@ -347,7 +361,7 @@ void __fastcall send_command_hook(void* self, void*, const char* raw) {
   grecord::Action action;
   { std::scoped_lock lock(g_state_mutex); action = g_logic.on_command(command, g_recording.load()); }
   apply_action(action);
-  if (word == "/esettings") g_page = Page::settings;
+  if (word == "/esettings") { g_page = Page::settings; g_page_transition = -1; g_page_alpha = 1; }
   if (word == "/estatus") notice(g_recording ? "REC: включена" : "REC: выключена");
   if (!local) g_send_command(self, raw);
 }
@@ -358,7 +372,7 @@ LRESULT CALLBACK wndproc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
   if (interactive) {
     if (message == WM_KEYDOWN && wparam == VK_ESCAPE) {
       std::scoped_lock lock(g_state_mutex);
-      if (g_prompt != Prompt::none) g_prompt = Prompt::none;
+      if (g_prompt != Prompt::none) g_dismiss_prompt = true;
       else g_menu_open = false;
       return 1;
     }
@@ -372,23 +386,57 @@ LRESULT CALLBACK wndproc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
 }
 
 void render_hud() {
-  const auto flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
-  ImGui::SetNextWindowBgAlpha(0.76f); ImGui::SetNextWindowPos({18, 18}, ImGuiCond_Always);
+  json status; std::string target, message, url; bool prompt_open;
+  {
+    std::scoped_lock lock(g_state_mutex); status = g_status; target = g_logic.target_name();
+    prompt_open = g_prompt != Prompt::none; url = g_last_url;
+    if (std::chrono::steady_clock::now() < g_notice_until) message = g_notice;
+  }
+  const bool editable = g_menu_open && !prompt_open;
+  if (g_hud_dragging && !editable) { g_hud_dragging = false; save_ui(); }
+  if (!g_recording && !g_uploading && message.empty() && url.empty() && !g_menu_open) return;
+  const auto display = ImGui::GetIO().DisplaySize;
+  static ImVec2 size{250, 45};
+  static ImVec2 drag_offset{};
+  auto flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+  if (!editable) flags |= ImGuiWindowFlags_NoInputs;
+  const auto position = grecord::ui::hud_position(g_ui, {size.x, size.y}, {display.x, display.y});
+  ImGui::SetNextWindowPos({position.x, position.y}, ImGuiCond_Always);
+  ImGui::SetNextWindowSizeConstraints({0, 0}, {std::max(1.f, display.x), std::max(1.f, display.y)});
+  ImGui::SetNextWindowBgAlpha(g_ui.opacity);
+  ImGui::PushFont(g_fonts.regular, 18.f * g_ui.scale);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {8.f * g_ui.scale, 8.f * g_ui.scale});
   if (ImGui::Begin("##grecord-hud", nullptr, flags)) {
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::max(1.f, std::min(500.f * g_ui.scale, display.x - 32.f * g_ui.scale)));
     if (g_recording) {
-      std::int64_t seconds{};
-      { std::scoped_lock lock(g_state_mutex); seconds = g_status.value("recording_seconds", 0ll); }
-      std::string target; { std::scoped_lock lock(g_state_mutex); target = g_logic.target_name(); }
-      ImGui::TextColored({1.f, .2f, .2f, 1.f}, "REC %02lld:%02lld", seconds / 60, seconds % 60);
+      const auto seconds = status.value("recording_seconds", 0ll);
+      ImGui::TextColored(grecord::ui::rgba(g_theme.red), "REC %02lld:%02lld", seconds / 60, seconds % 60);
       if (!target.empty()) { ImGui::SameLine(); ImGui::TextUnformatted(("· " + target).c_str()); }
     }
-    if (g_uploading) ImGui::TextColored({.35f, .72f, 1.f, 1.f}, "UPLOAD %u%%", g_upload_percent.load());
-    std::scoped_lock lock(g_state_mutex);
-    if (!g_notice.empty() && std::chrono::steady_clock::now() < g_notice_until) ImGui::TextWrapped("%s", g_notice.c_str());
-    if (!g_last_url.empty()) ImGui::TextColored({.35f, 1.f, .55f, 1.f}, "%s", g_last_url.c_str());
+    if (g_uploading) ImGui::TextColored(grecord::ui::rgba(g_theme.yellow), "UPLOAD %u%%", g_upload_percent.load());
+    if (!message.empty()) ImGui::TextUnformatted(message.c_str());
+    if (!url.empty()) ImGui::TextColored(grecord::ui::rgba(g_theme.green), "%s", url.c_str());
+    if (g_menu_open && !g_recording && !g_uploading) ImGui::TextUnformatted("Gambit Record · ожидание записи");
+    if (editable) ImGui::TextDisabled("Потяните мышью, чтобы переместить");
+    ImGui::PopTextWrapPos();
+    size = ImGui::GetWindowSize();
+    auto current = grecord::ui::hud_position(g_ui, {size.x, size.y}, {display.x, display.y});
+    if (editable && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      const auto mouse = ImGui::GetMousePos();
+      drag_offset = {mouse.x - current.x, mouse.y - current.y}; g_hud_dragging = true;
+    }
+    if (g_hud_dragging) {
+      if (editable && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        const auto mouse = ImGui::GetMousePos();
+        current = grecord::ui::clamp_position({mouse.x - drag_offset.x, mouse.y - drag_offset.y}, {size.x, size.y}, {display.x, display.y});
+        g_ui.custom_position = true;
+        g_ui.anchor = grecord::ui::hud_anchor(current, {size.x, size.y}, {display.x, display.y});
+      } else { g_hud_dragging = false; save_ui(); }
+    }
+    ImGui::SetWindowPos({current.x, current.y});
   }
-  ImGui::End();
+  ImGui::End(); ImGui::PopStyleVar(); ImGui::PopFont();
 }
 
 bool action_button(const char* label, const ImVec4& color, ImVec2 size = {0, 0}) {
@@ -398,35 +446,57 @@ bool action_button(const char* label, const ImVec4& color, ImVec2 size = {0, 0})
   ImGui::PushStyleColor(ImGuiCol_Button, color);
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, brighten(color, .08f));
   ImGui::PushStyleColor(ImGuiCol_ButtonActive, brighten(color, .15f));
-  const bool pressed = ImGui::Button(label, size);
-  ImGui::PopStyleColor(3);
+  const float luminance = color.x * .2126f + color.y * .7152f + color.z * .0722f;
+  ImGui::PushStyleColor(ImGuiCol_Text, luminance > .5f ? ImVec4{0, 0, 0, 1} : ImVec4{1, 1, 1, 1});
+  const bool pressed = grecord::ui::button(label, size);
+  ImGui::PopStyleColor(4);
   return pressed;
 }
 
+void next_button(float width) {
+  const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+  if (right - ImGui::GetItemRectMax().x >= width + ImGui::GetStyle().ItemSpacing.x) ImGui::SameLine();
+}
+
 void card_begin(const char* id, const char* title, float height) {
-  ImGui::BeginChild(id, {0, height}, ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
-  if (g_font_bold) ImGui::PushFont(g_font_bold);
+  (void)height;
+  ImGui::BeginChild(id, {0, 0}, ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysAutoResize | ImGuiChildFlags_AlwaysUseWindowPadding,
+    ImGuiWindowFlags_NoBackground | ((!g_menu_open || g_sidebar_expanded) ? ImGuiWindowFlags_NoInputs : 0));
+  if (g_font_bold) ImGui::PushFont(g_font_bold, 24.f);
   ImGui::TextUnformatted(title);
   if (g_font_bold) ImGui::PopFont();
   ImGui::Spacing();
 }
 void card_end() { ImGui::EndChild(); }
 
-bool page_button(const char* label, Page page) {
+bool page_button(const char* label, const char* icon, Page page, float icon_width, float height) {
   const bool selected = g_page == page;
-  if (selected) {
-    ImGui::PushStyleColor(ImGuiCol_Header, {0x45 / 255.f, 0x47 / 255.f, 0x5a / 255.f, 1.f});
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, {0x58 / 255.f, 0x5b / 255.f, 0x70 / 255.f, 1.f});
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, {0x58 / 255.f, 0x5b / 255.f, 0x70 / 255.f, 1.f});
-  }
-  const bool pressed = ImGui::Selectable(label, selected, 0, {ImGui::GetContentRegionAvail().x, 42.f});
-  if (selected) ImGui::PopStyleColor(3);
-  if (pressed) g_page = page;
+  const auto start = ImGui::GetCursorScreenPos();
+  const bool pressed = ImGui::InvisibleButton(label, {g_sidebar_width, height});
+  auto* storage = ImGui::GetStateStorage(); const auto id = ImGui::GetID(label);
+  float blend = storage->GetFloat(id, selected ? 1.f : 0.f);
+  blend += ((selected ? 1.f : ImGui::IsItemHovered() ? .5f : 0.f) - blend) * std::min(1.f, ImGui::GetIO().DeltaTime / .2f);
+  storage->SetFloat(id, blend);
+  const auto base = ImGui::GetStyleColorVec4(ImGuiCol_ChildBg);
+  const auto active = ImGui::GetStyleColorVec4(ImGuiCol_FrameBgActive);
+  const ImVec4 color{base.x + (active.x - base.x) * blend, base.y + (active.y - base.y) * blend,
+    base.z + (active.z - base.z) * blend, base.w + (active.w - base.w) * blend};
+  auto* draw = ImGui::GetWindowDrawList();
+  draw->AddRectFilled(start, {start.x + g_sidebar_width, start.y + height}, ImGui::GetColorU32(color));
+  ImGui::PushFont(g_fonts.icons, 24.f);
+  auto text_size = ImGui::CalcTextSize(icon);
+  draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), {start.x + (icon_width - text_size.x) / 2, start.y + (height - text_size.y) / 2}, ImGui::GetColorU32(ImGuiCol_Text), icon);
+  ImGui::PopFont();
+  ImGui::PushFont(g_fonts.bold, 18.f); text_size = ImGui::CalcTextSize(label);
+  draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), {start.x + icon_width + 5, start.y + (height - text_size.y) / 2}, ImGui::GetColorU32(ImGuiCol_Text), label);
+  ImGui::PopFont();
+  if (!g_sidebar_expanded && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", label);
+  if (pressed && !selected) { g_next_page = page; g_page_transition = ImGui::GetTime(); }
   return pressed;
 }
 
 void page_title(const char* title, const char* description) {
-  if (g_font_bold) ImGui::PushFont(g_font_bold);
+  if (g_font_bold) ImGui::PushFont(g_font_bold, 24.f);
   ImGui::TextUnformatted(title);
   if (g_font_bold) ImGui::PopFont();
   ImGui::TextDisabled("%s", description);
@@ -438,80 +508,100 @@ void render_prompt() {
   if (prompt == Prompt::none) return;
   const char* title = prompt == Prompt::start ? "Gambit Record##start" : prompt == Prompt::finish ? "Gambit Record##finish" : "Gambit Record##missing";
   ImGui::OpenPopup(title);
-  ImGui::SetNextWindowSize({prompt == Prompt::finish ? 620.f : 430.f, 0}, ImGuiCond_Always);
-  if (ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize)) {
-    if (g_font_bold) ImGui::PushFont(g_font_bold);
-    ImGui::TextColored({0xcb / 255.f, 0xa6 / 255.f, 0xf7 / 255.f, 1.f}, "GAMBIT RECORD");
+  const auto display = ImGui::GetIO().DisplaySize;
+  ImGui::SetNextWindowSize({std::min(prompt == Prompt::finish ? 620.f : 430.f, display.x - 16), 0}, ImGuiCond_Always);
+  ImGui::SetNextWindowSizeConstraints({0, 0}, {display.x - 16, display.y - 16});
+  ImGui::SetNextWindowPos({display.x * .5f, display.y * .5f}, ImGuiCond_Always, {.5f, .5f});
+  if (ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar)) {
+    if (g_dismiss_prompt.exchange(false)) {
+      { std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::none; }
+      ImGui::CloseCurrentPopup(); ImGui::EndPopup(); return;
+    }
+    ImGui::PushTextWrapPos(0);
+    if (g_font_bold) ImGui::PushFont(g_font_bold, 24.f);
+    ImGui::TextColored(grecord::ui::rgba(g_theme.text[0]), "GAMBIT RECORD");
     if (g_font_bold) ImGui::PopFont();
     ImGui::Separator(); ImGui::Spacing();
     if (prompt == Prompt::start) {
       ImGui::TextUnformatted("Вы начали слежку без записи.");
       ImGui::TextDisabled("Запись поможет сохранить доказательства до выдачи наказания."); ImGui::Spacing();
-      if (action_button("Начать запись", {0x40 / 255.f, 0xa0 / 255.f, 0x67 / 255.f, 1.f}, {180, 36})) { start_recording(); std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::none; ImGui::CloseCurrentPopup(); }
-      ImGui::SameLine(); if (ImGui::Button("Не сейчас", {150, 36})) { std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::none; ImGui::CloseCurrentPopup(); }
+      if (action_button("Начать запись", grecord::ui::rgba(g_theme.green), {180, 36})) { start_recording(); std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::none; ImGui::CloseCurrentPopup(); }
+      next_button(150); if (grecord::ui::button("Не сейчас", {150, 36})) { std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::none; ImGui::CloseCurrentPopup(); }
     } else if (prompt == Prompt::finish) {
       ImGui::TextUnformatted("Наказание подтверждено сервером.");
       ImGui::TextDisabled("Можно сразу поставить ролик в очередь YouTube или оставить файл локально."); ImGui::Spacing();
-      if (action_button("Завершить и загрузить", {0x40 / 255.f, 0xa0 / 255.f, 0x67 / 255.f, 1.f}, {205, 36})) { stop_recording(true); std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::none; ImGui::CloseCurrentPopup(); }
-      ImGui::SameLine(); if (ImGui::Button("Завершить локально", {190, 36})) { stop_recording(false); std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::none; ImGui::CloseCurrentPopup(); }
-      ImGui::SameLine(); if (ImGui::Button("Продолжить", {135, 36})) { std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::none; ImGui::CloseCurrentPopup(); }
+      if (action_button("Завершить и загрузить", grecord::ui::rgba(g_theme.green), {205, 36})) { stop_recording(true); std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::none; ImGui::CloseCurrentPopup(); }
+      next_button(190); if (grecord::ui::button("Завершить локально", {190, 36})) { stop_recording(false); std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::none; ImGui::CloseCurrentPopup(); }
+      next_button(135); if (grecord::ui::button("Продолжить", {135, 36})) { std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::none; ImGui::CloseCurrentPopup(); }
     } else {
       ImGui::TextWrapped("Наказание подтверждено, но доказательство не записано.");
-      ImGui::Spacing(); if (ImGui::Button("Понятно", {140, 36})) { std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::none; ImGui::CloseCurrentPopup(); }
+      ImGui::Spacing(); if (grecord::ui::button("Понятно", {140, 36})) { std::scoped_lock lock(g_state_mutex); g_prompt = Prompt::none; ImGui::CloseCurrentPopup(); }
     }
-    ImGui::EndPopup();
+    ImGui::PopTextWrapPos(); ImGui::EndPopup();
   }
 }
 
 void render_window() {
-  if (!g_menu_open) return;
+  const float delta = ImGui::GetIO().DeltaTime;
+  g_window_alpha = std::clamp(g_window_alpha + (g_menu_open ? delta : -delta) / .5f, 0.f, 1.f);
+  if (g_window_alpha <= 0) return;
   json status; std::string last_url;
   { std::scoped_lock lock(g_state_mutex); status = g_status; last_url = g_last_url; }
-  ImGui::SetNextWindowSize({760, 470}, ImGuiCond_Always);
+  if (g_page_transition >= 0) {
+    const auto elapsed = static_cast<float>(ImGui::GetTime() - g_page_transition);
+    if (elapsed < .15f) g_page_alpha = 1.f - elapsed / .15f;
+    else { g_page = g_next_page; g_page_alpha = std::min(1.f, (elapsed - .15f) / .3f); }
+    if (elapsed >= .45f) g_page_transition = -1;
+  }
+  const float frame = ImGui::GetFrameHeight();
   const auto display = ImGui::GetIO().DisplaySize;
+  const ImVec2 window_size{std::min(29.f * frame, std::max(1.f, display.x - 16)), std::min(18.f * frame, std::max(1.f, display.y - 16))};
+  const float icon_width = 29.f * frame * .0629f;
+  const float expanded_width = 29.f * frame * .2859f;
+  if (!g_sidebar_width) g_sidebar_width = icon_width;
+  const float target_width = g_sidebar_expanded ? expanded_width : icon_width;
+  const float width_step = (expanded_width - icon_width) * delta / .5f;
+  g_sidebar_width += std::clamp(target_width - g_sidebar_width, -width_step, width_step);
+  ImGui::SetNextWindowSize(window_size, ImGuiCond_Always);
   ImGui::SetNextWindowPos({display.x * .5f, display.y * .5f}, ImGuiCond_FirstUseEver, {.5f, .5f});
+  ImGui::PushStyleVar(ImGuiStyleVar_Alpha, g_window_alpha);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
-  const auto flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse;
+  auto flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
+    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
+  if (!g_menu_open) flags |= ImGuiWindowFlags_NoInputs;
   if (ImGui::Begin("Gambit Record##main", nullptr, flags)) {
-    ImGui::BeginChild("##sidebar", {185, 0}, ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
-    if (g_font_bold) ImGui::PushFont(g_font_bold);
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.f);
-    ImGui::TextColored({0xcb / 255.f, 0xa6 / 255.f, 0xf7 / 255.f, 1.f}, "GAMBIT RECORD");
-    if (g_font_bold) ImGui::PopFont();
-    ImGui::TextDisabled("grecord  v1.0");
-    ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
-    page_button("Запись", Page::recording);
-    page_button("Загрузки", Page::uploads);
-    page_button("Настройки", Page::settings);
-    page_button("О программе", Page::about);
-    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 45.f);
-    ImGui::TextDisabled("Gambit Role Play");
-    ImGui::EndChild();
-
-    ImGui::SameLine(0, 0);
-    ImGui::BeginChild("##content", {0, 0}, ImGuiChildFlags_AlwaysUseWindowPadding);
+    const auto pos = ImGui::GetWindowPos();
+    const auto clamped = grecord::ui::clamp_position({pos.x, pos.y}, {window_size.x, window_size.y}, {display.x, display.y});
+    ImGui::SetWindowPos({clamped.x, clamped.y});
+    ImGui::SetCursorPos({icon_width, 0});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 8});
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, g_window_alpha * g_page_alpha * (g_sidebar_expanded ? 100.f / 255.f : 1.f));
+    ImGui::BeginChild("##content", {0, 0}, ImGuiChildFlags_AlwaysUseWindowPadding,
+      ImGuiWindowFlags_NoBackground | ((g_sidebar_expanded || !g_menu_open) ? ImGuiWindowFlags_NoInputs : 0));
+    ImGui::PushTextWrapPos(0);
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.f);
     ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 42.f);
-    if (ImGui::Button("X", {30, 28})) g_menu_open = false;
+    if (grecord::ui::button("X", {30, 28})) g_menu_open = false;
     ImGui::SetCursorPosY(12.f);
 
     if (g_page == Page::recording) {
       page_title("Запись", "Управление доказательством и важными моментами");
       card_begin("##record-state", "ТЕКУЩЕЕ СОСТОЯНИЕ", 112.f);
       const bool ready=g_worker_online.load()&&g_capture_ready.load();
-      ImGui::TextColored(g_recording ? ImVec4{0xf3 / 255.f, 0x8b / 255.f, 0xa8 / 255.f, 1.f} : ready ? ImVec4{0xa6 / 255.f, 0xe3 / 255.f, 0xa1 / 255.f, 1.f} : ImVec4{0xf9 / 255.f, 0xe2 / 255.f, 0xaf / 255.f, 1.f},
-                         "%s", g_recording ? "● ИДЁТ ЗАПИСЬ" : ready ? "● ГОТОВ К ЗАПИСИ" : "● ПОДГОТОВКА ЗАХВАТА");
+      ImGui::TextColored(g_recording ? grecord::ui::rgba(g_theme.red) : ready ? grecord::ui::rgba(g_theme.green) : grecord::ui::rgba(g_theme.yellow),
+                         "%s", g_recording ? "ИДЁТ ЗАПИСЬ" : ready ? "ГОТОВ К ЗАПИСИ" : "ПОДГОТОВКА ЗАХВАТА");
       std::string target; { std::scoped_lock lock(g_state_mutex); target = g_logic.target_name(); }
       ImGui::TextDisabled("Наблюдение: %s", target.empty() ? "не выбрано" : target.c_str());
       card_end();
       card_begin("##record-actions", "ДЕЙСТВИЯ", 150.f);
       if (!g_recording) {
-        if (action_button("Начать запись", {0x40 / 255.f, 0xa0 / 255.f, 0x67 / 255.f, 1.f}, {180, 38})) start_recording();
+        if (action_button("Начать запись", grecord::ui::rgba(g_theme.green), {180, 38})) start_recording();
       } else {
-        if (action_button("Завершить и загрузить", {0x40 / 255.f, 0xa0 / 255.f, 0x67 / 255.f, 1.f}, {205, 38})) stop_recording(true);
-        ImGui::SameLine(); if (ImGui::Button("Сохранить локально", {180, 38})) stop_recording(false);
+        if (action_button("Завершить и загрузить", grecord::ui::rgba(g_theme.green), {205, 38})) stop_recording(true);
+        next_button(180); if (grecord::ui::button("Сохранить локально", {180, 38})) stop_recording(false);
       }
-      if (ImGui::Button("Добавить важную метку", {205, 36})) request_worker({{"command", "marker"}, {"label", "important"}});
+      if (grecord::ui::button("Добавить важную метку", {205, 36})) request_worker({{"command", "marker"}, {"label", "important"}});
+      if (grecord::ui::button("Открыть папку записей", {205, 36})) open_recordings(status);
       card_end();
     } else if (g_page == Page::uploads) {
       page_title("Загрузки", "Очередь публикации на общем YouTube-канале");
@@ -527,6 +617,9 @@ void render_window() {
       const auto upload_error=status.value("youtube_last_upload_error","");
       if (!upload_error.empty()) ImGui::TextWrapped("Последняя ошибка: %s",upload_error.c_str());
       if (!last_url.empty()) ImGui::TextWrapped("Последняя ссылка: %s", last_url.c_str());
+      ImGui::BeginDisabled(last_url.empty());
+      if (grecord::ui::button("Копировать ссылку")) copy_link(last_url);
+      ImGui::EndDisabled();
       card_end();
     } else if (g_page == Page::settings) {
       page_title("Настройки", "YouTube, звук и локальный архив");
@@ -537,31 +630,53 @@ void render_window() {
         archive = status.value("archive_limit_gb", 20); dirty = false;
       }
       card_begin("##youtube-settings", "YOUTUBE", 88.f);
-      dirty |= ImGui::Checkbox("Автоматически ставить запись в очередь", &youtube);
+      dirty |= grecord::ui::toggle("Автоматически ставить запись в очередь", &youtube);
       card_end();
       card_begin("##audio-settings", "ИСТОЧНИК ЗВУКА", 95.f);
-      dirty |= ImGui::RadioButton("Без звука", &audio_source, 0); ImGui::SameLine();
-      dirty |= ImGui::RadioButton("Звук игры", &audio_source, 1); ImGui::SameLine();
+      dirty |= ImGui::RadioButton("Без звука", &audio_source, 0); next_button(120);
+      dirty |= ImGui::RadioButton("Звук игры", &audio_source, 1); next_button(120);
       dirty |= ImGui::RadioButton("Микрофон", &audio_source, 2);
       card_end();
       card_begin("##archive-settings", "ЛОКАЛЬНЫЙ АРХИВ", 90.f);
       ImGui::SetNextItemWidth(-1); dirty |= ImGui::SliderInt("##archive-size", &archive, 1, 100, "%d ГБ");
       card_end();
       if (dirty) {
-        if (action_button("Сохранить настройки", {0x40 / 255.f, 0xa0 / 255.f, 0x67 / 255.f, 1.f}, {190, 36})) {
+        if (action_button("Сохранить настройки", grecord::ui::rgba(g_theme.green), {190, 36})) {
           const auto response = request_worker({{"command", "settings_set"}, {"settings", {{"youtube_enabled", youtube}, {"audio_enabled", audio_source == 1}, {"microphone_enabled", audio_source == 2}, {"archive_limit_gb", archive}}}});
           if (response.value("success", false)) {
             { std::scoped_lock lock(g_state_mutex); g_status["youtube_enabled"] = youtube; g_status["audio_enabled"] = audio_source == 1; g_status["microphone_enabled"] = audio_source == 2; g_status["archive_limit_gb"] = archive; }
             dirty = false; notice("Настройки сохранены");
           } else notice("Не удалось сохранить настройки: " + response.value("error", "worker offline"));
         }
-        ImGui::SameLine(); ImGui::TextColored({0xf9 / 255.f, 0xe2 / 255.f, 0xaf / 255.f, 1.f}, "Есть несохранённые изменения");
+        ImGui::TextColored(grecord::ui::rgba(g_theme.yellow), "Есть несохранённые изменения");
       } else {
         ImGui::TextDisabled("Изменений нет");
       }
+      card_begin("##interface-settings", "ИНТЕРФЕЙС И СТАТУС-БАР", 0);
+      if (grecord::ui::toggle("Использовать тему GAdmin", &g_ui.follow_gadmin)) save_ui();
+      grecord::ui::ThemeState theme_state;
+      { std::scoped_lock lock(g_theme_mutex); theme_state = g_theme_state; }
+      ImGui::TextDisabled("%s", !g_ui.follow_gadmin ? "Встроенная тема GAdmin" :
+        theme_state == grecord::ui::ThemeState::loaded ? "Тема GAdmin подключена" :
+        theme_state == grecord::ui::ThemeState::missing ? "Конфигурация GAdmin не найдена — встроенная тема" :
+        "Не удалось прочитать тему — сохранены последние корректные цвета");
+      if (g_ui.follow_gadmin) ImGui::TextDisabled("Изменения появятся после сохранения темы GAdmin (до 5 минут).");
+      ImGui::TextUnformatted("Масштаб статус-бара");
+      int scale = static_cast<int>(g_ui.scale * 100 + .5f);
+      ImGui::SetNextItemWidth(-1);
+      if (ImGui::SliderInt("##hud-scale", &scale, 75, 200, "%d%%", ImGuiSliderFlags_AlwaysClamp)) g_ui.scale = scale / 100.f;
+      if (ImGui::IsItemDeactivatedAfterEdit()) save_ui();
+      ImGui::TextUnformatted("Прозрачность фона (100% — непрозрачный)");
+      int opacity = static_cast<int>(g_ui.opacity * 100 + .5f);
+      ImGui::SetNextItemWidth(-1);
+      if (ImGui::SliderInt("##hud-opacity", &opacity, 20, 100, "%d%%", ImGuiSliderFlags_AlwaysClamp)) g_ui.opacity = opacity / 100.f;
+      if (ImGui::IsItemDeactivatedAfterEdit()) save_ui();
+      if (grecord::ui::button("Вернуть вниз по центру")) { g_ui.custom_position = false; g_hud_dragging = false; save_ui(); }
+      ImGui::TextDisabled("При открытом /grecord потяните статус-бар левой кнопкой мыши.");
+      card_end();
     } else {
       page_title("О программе", "Информация о сборке и используемых компонентах");
-      card_begin("##about", "GAMBIT RECORD 0.1.4", 190.f);
+      card_begin("##about", "GAMBIT RECORD 0.1.5", 190.f);
       ImGui::TextWrapped("Нативный ASI-плагин записи доказательств для Gambit-RP.");
       ImGui::Spacing();
       ImGui::TextWrapped("Интерфейс, управление курсором и схема SA-MP-событий используют подходы GAdmin (GPLv3), commit c31749c0.");
@@ -569,9 +684,35 @@ void render_window() {
       ImGui::Spacing(); ImGui::TextDisabled("Команда: /grecord");
       card_end();
     }
-    ImGui::EndChild();
+    ImGui::PopTextWrapPos();
+    ImGui::EndChild(); ImGui::PopStyleVar(2);
+    ImGui::SetCursorPos({0, 0});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0);
+    ImGui::BeginChild("##sidebar", {g_sidebar_width, window_size.y}, ImGuiChildFlags_None,
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | (!g_menu_open ? ImGuiWindowFlags_NoInputs : 0));
+    const auto origin = ImGui::GetCursorScreenPos();
+    if (ImGui::InvisibleButton("##expand-menu", {g_sidebar_width, icon_width})) g_sidebar_expanded = !g_sidebar_expanded;
+    auto* draw = ImGui::GetWindowDrawList();
+    if (ImGui::IsItemHovered()) draw->AddRectFilled(origin, {origin.x + g_sidebar_width, origin.y + icon_width}, ImGui::GetColorU32(ImGuiCol_ButtonHovered), 8);
+    ImGui::PushFont(g_fonts.icons, 24.f);
+    const auto icon_size = ImGui::CalcTextSize("\uE9E0");
+    draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), {origin.x + (icon_width - icon_size.x) / 2, origin.y + (icon_width - icon_size.y) / 2}, ImGui::GetColorU32(ImGuiCol_Text), "\uE9E0");
+    ImGui::PopFont();
+    ImGui::PushFont(g_fonts.bold, 24.f);
+    draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), {origin.x + icon_width + 5, origin.y + 6}, ImGui::GetColorU32(ImGuiCol_Text), "Gambit Record");
+    ImGui::PopFont();
+    ImGui::PushFont(g_fonts.light, 18.f);
+    draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), {origin.x + icon_width + 5, origin.y + 32}, ImGui::GetColorU32(ImGuiCol_TextDisabled), "v0.1.5");
+    ImGui::PopFont();
+    ImGui::SetCursorPos({0, icon_width + 5});
+    page_button("Запись", "\uE956", Page::recording, icon_width, window_size.y * .066f);
+    page_button("Загрузки", "\uE996", Page::uploads, icon_width, window_size.y * .066f);
+    page_button("Настройки", "\uEA55", Page::settings, icon_width, window_size.y * .066f);
+    page_button("О программе", "\uE9F7", Page::about, icon_width, window_size.y * .066f);
+    ImGui::EndChild(); ImGui::PopStyleVar(2);
   }
-  ImGui::End(); ImGui::PopStyleVar();
+  ImGui::End(); ImGui::PopStyleVar(2);
 }
 
 HRESULT WINAPI present_hook(IDirect3DDevice9* device, const RECT* source, const RECT* destination, HWND override_window, const RGNDATA* dirty) {
@@ -579,20 +720,25 @@ HRESULT WINAPI present_hook(IDirect3DDevice9* device, const RECT* source, const 
   static bool imgui_ready{};
   if (!imgui_ready) {
     D3DDEVICE_CREATION_PARAMETERS params{}; device->GetCreationParameters(&params); g_window = params.hFocusWindow;
-    ImGui_ImplWin32_EnableDpiAwareness(); ImGui::CreateContext(); apply_gadmin_style();
+    ImGui_ImplWin32_EnableDpiAwareness(); ImGui::CreateContext(); grecord::ui::apply_style(g_theme);
     auto& io = ImGui::GetIO(); io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-    g_font_regular = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\arial.ttf", 17.f, nullptr, io.Fonts->GetGlyphRangesCyrillic());
-    g_font_bold = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\arialbd.ttf", 17.f, nullptr, io.Fonts->GetGlyphRangesCyrillic());
-    if (g_font_regular) io.FontDefault = g_font_regular;
+    io.IniFilename = nullptr;
+    g_fonts = grecord::ui::load_fonts(g_module);
+    g_font_regular = g_fonts.regular; g_font_bold = g_fonts.bold;
+    std::string ui_error; g_ui = grecord::ui::load_settings(game_directory() / "grecord" / "ui.json", ui_error);
+    if (!ui_error.empty()) notice("Настройки интерфейса не прочитаны; применены стандартные");
     ImGui_ImplWin32_Init(g_window); ImGui_ImplDX9_Init(device);
     g_original_wndproc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(wndproc)));
     imgui_ready = true;
   }
+  grecord::ui::Theme next_theme;
+  { std::scoped_lock lock(g_theme_mutex); if (g_ui.follow_gadmin) next_theme = g_external_theme; }
+  if (!(next_theme == g_theme)) { g_theme = next_theme; grecord::ui::apply_style(g_theme); }
   ImGui_ImplDX9_NewFrame(); ImGui_ImplWin32_NewFrame();
   bool interactive{}; { std::scoped_lock lock(g_state_mutex); interactive = g_menu_open.load() || g_prompt != Prompt::none; }
   update_cursor(interactive); ImGui::GetIO().MouseDrawCursor = false;
   ImGui::NewFrame();
-  render_hud(); render_window(); render_prompt();
+  render_window(); render_hud(); render_prompt();
   ImGui::EndFrame(); ImGui::Render(); ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
   return g_present(device, source, destination, override_window, dirty);
 }
@@ -630,6 +776,16 @@ void status_loop() {
   }
 }
 
+void theme_loop() {
+  grecord::ui::ThemeReader reader;
+  const auto path = game_directory() / "gadmin" / "configuration" / "main.mpk";
+  while (g_running) {
+    reader.poll(path);
+    { std::scoped_lock lock(g_theme_mutex); g_external_theme = reader.theme(); g_theme_state = reader.state(); }
+    Sleep(1000);
+  }
+}
+
 DWORD WINAPI initialize(void*) {
   while (g_running && !(g_samp = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(L"samp.dll")))) Sleep(100);
   if (!g_running) return 0;
@@ -657,6 +813,7 @@ DWORD WINAPI initialize(void*) {
   MH_EnableHook(table[17]); MH_EnableHook(table[16]);
   g_initialized = true;
   std::thread(status_loop).detach();
+  std::thread(theme_loop).detach();
   return 0;
 }
 } // namespace

@@ -38,6 +38,10 @@ try {
         [IO.Directory]::CreateDirectory((Join-Path $TargetPath 'grecord')) | Out-Null
         Copy-Item -LiteralPath (Join-Path $payloadRoot 'grecord.asi') -Destination (Join-Path $TargetPath 'grecord.asi') -Force
         Copy-Item -LiteralPath (Join-Path $payloadRoot 'GambitRecord.exe') -Destination $worker -Force
+        $licensesPath = Join-Path $payloadRoot 'licenses'
+        if (Test-Path -LiteralPath $licensesPath) {
+            Copy-Item -LiteralPath $licensesPath -Destination (Join-Path $TargetPath 'grecord') -Recurse -Force
+        }
         $config = Join-Path $TargetPath 'grecord\config.json'
         if (-not (Test-Path -LiteralPath $config)) {
             Copy-Item -LiteralPath (Join-Path $payloadRoot 'config.json') -Destination $config
